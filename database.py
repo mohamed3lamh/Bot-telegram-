@@ -167,6 +167,58 @@ def init_db():
             pass
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
+            action TEXT NOT NULL,
+            details TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+
+    # ---------- تذاكر الدعم ----------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS support_tickets (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            subject TEXT DEFAULT 'دعم',
+            message TEXT NOT NULL,
+            status TEXT DEFAULT 'open',
+            admin_reply TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+
+    # ---------- إعدادات الأسعار والمحافظ ----------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+
+    # إدخال القيم الافتراضية للإعدادات إذا لم تكن موجودة
+    defaults = {
+        'plan_price_1': '4',
+        'plan_price_2': '6',
+        'plan_price_3': '8',
+        'usdt_wallet': 'TYourUSDTAddressHere',
+        'trx_wallet': 'TSDqje1oWAcDY8Q5XzUDLWksWMSPqxv3PB',
+        'usdt_rate': '1',   # 1 USDT = 1 USD
+        'trx_rate': '0.16'   # 1 TRX = 0.16 USD (مثال، يحدد السعر)
+    }
+    for k, v in defaults.items():
+        cursor.execute("""
+            INSERT INTO settings (key, value) VALUES (%s, %s)
+            ON CONFLICT (key) DO NOTHING
+        """, (k, v))
+    conn.commit()
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS pending_subscriptions (
             user_id BIGINT PRIMARY KEY,
             plan TEXT NOT NULL,
@@ -581,3 +633,99 @@ def get_best_telegram_account():
     cursor.close()
     conn.close()
     return row
+
+# ---------- سجل العمليات ----------
+def log_activity(user_id, action, details=""):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO activity_log (user_id, action, details) VALUES (%s, %s, %s)",
+                   (user_id, action, details))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def get_recent_activities(limit=50):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, user_id, action, details, created_at FROM activity_log ORDER BY created_at DESC LIMIT %s", (limit,))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
+# ---------- تذاكر الدعم ----------
+def create_ticket(user_id, subject, message):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO support_tickets (user_id, subject, message) VALUES (%s, %s, %s)",
+                   (user_id, subject, message))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def get_open_tickets():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, user_id, subject, message, status, admin_reply, created_at FROM support_tickets WHERE status='open' ORDER BY created_at DESC")
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
+def get_all_tickets():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, user_id, subject, message, status, admin_reply, created_at FROM support_tickets ORDER BY created_at DESC")
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
+def reply_ticket(ticket_id, reply_text):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE support_tickets SET admin_reply = %s, status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                   (reply_text, ticket_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def close_ticket(ticket_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE support_tickets SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = %s", (ticket_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+# ---------- الإعدادات ----------
+def get_setting(key, default=None):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = %s", (key,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if row:
+        return row[0]
+    return default
+
+def set_setting(key, value):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO settings (key, value) VALUES (%s, %s)
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+    """, (key, str(value)))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def get_all_settings():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT key, value FROM settings ORDER BY key")
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
