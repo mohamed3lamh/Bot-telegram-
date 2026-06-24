@@ -358,7 +358,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         await query.answer("🛑 تم إيقاف الصيد بنجاح.", show_alert=True)
     elif data.startswith("add_country_page_"):
         page = int(data.split("_")[-1])
-        items_per_page = 8
+        items_per_page = 23
         start_idx = page * items_per_page
         end_idx = start_idx + items_per_page
         page_countries = ALL_COUNTRIES[start_idx:end_idx]
@@ -383,11 +383,23 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     elif data.startswith("save_c_"):
         parts = data.split("_")
-        country_name = parts[2]
+        # استخراج اسم الدولة والكود
+        # الصيغة: save_c_اسم_الدولة_code
+        country_name_with_emoji = parts[2]
         country_code = parts[3]
+        # إذا كان اسم الدولة يحتوي على مسافات، فقد يكون هناك أجزاء إضافية
+        if len(parts) > 4:
+            country_name_with_emoji = "_".join(parts[2:-1])
+            country_code = parts[-1]
+        
+        # استبدال الشرطات السفلية بمسافات
+        country_name_with_emoji = country_name_with_emoji.replace("_", " ")
+        
         db.add_user_country(user_id, country_code)
-        await query.message.reply_text(f"🟢 تم إضافة وتفعيل دولة **{country_name}** بنجاح لتفعيل التليجرام!")
-        await start_user_bot(update, context)
+        # رسالة منبثقة فقط، بدون تغيير الصفحة
+        await query.answer(f"✔️ تمت إضافة {country_name_with_emoji} بنجاح", show_alert=True)
+        # لا نغير الصفحة، يبقى المستخدم في نفس قائمة الدول
+        return
     elif data.startswith(("code_", "unban_", "cancel_", "rate_", "weak_")):
         parts = data.split("_", 2)
         if len(parts) < 3:
