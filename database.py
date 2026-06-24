@@ -89,6 +89,14 @@ def init_db():
     ''')
     conn.commit()
 
+    # إضافة أعمدة الإعدادات إذا لم تكن موجودة
+    if not column_exists('user_countries', 'number_type'):
+        cursor.execute("ALTER TABLE user_countries ADD COLUMN number_type TEXT DEFAULT 'all'")
+        conn.commit()
+    if not column_exists('user_countries', 'session_status'):
+        cursor.execute("ALTER TABLE user_countries ADD COLUMN session_status TEXT DEFAULT 'all'")
+        conn.commit()
+        
     # --- ترقية جدول حسابات الموقع إلى V2 (متعدد) ---
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS user_site_accounts_v2 (
@@ -729,3 +737,30 @@ def get_all_settings():
     cursor.close()
     conn.close()
     return rows
+
+def update_country_settings(user_id, country_code, number_type=None, session_status=None):
+    """تحديث إعدادات دولة معينة"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    if number_type is not None:
+        cursor.execute("UPDATE user_countries SET number_type = %s WHERE user_id = %s AND country_name = %s",
+                       (number_type, user_id, country_code))
+    if session_status is not None:
+        cursor.execute("UPDATE user_countries SET session_status = %s WHERE user_id = %s AND country_name = %s",
+                       (session_status, user_id, country_code))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def get_country_settings(user_id, country_code):
+    """جلب إعدادات دولة معينة"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT number_type, session_status FROM user_countries WHERE user_id = %s AND country_name = %s",
+                   (user_id, country_code))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if row:
+        return {"number_type": row[0] or "all", "session_status": row[1] or "all"}
+    return {"number_type": "all", "session_status": "all"}
