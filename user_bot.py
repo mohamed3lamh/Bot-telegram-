@@ -508,13 +508,13 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
 
             # --- صياغة الرسالة ---
             message_text = (
-                f"🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰\n\n"
-                f"    - الـرقـــــم : <code>{phone_number}</code>\n"
-                f"    - الـدولـة : {country_name} {country_flag}\n"
-                f"    - الـحـالـة : {status_text}\n"
-                f"    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة\n"
-                f"    - الــكـــود : قـيـد الإنـتـظـار ❗️"
-            )
+                        f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
+                        f"<b>    - الـرقـــــم : <code>{phone_number}</code></b>\n"
+                        f"<b>    - الـدولـة : {country_name} {country_flag}</b>\n"
+                        f"<b>    - الـحـالـة : {status_text}</b>\n"
+                        f"<b>    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة</b>\n"
+                        f"<b>    - الــكـــود : قـيـد الإنـتـظـار ❗️</b>"
+                    )
 
             keyboard = [
                 [
