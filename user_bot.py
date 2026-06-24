@@ -402,11 +402,10 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
                     )
                     try:
                         await query.message.edit_text(text=updated_text, reply_markup=None, parse_mode=ParseMode.HTML)
-                        await query.message.reply_text(f"📥 <b>وصول كود جديد للرقم</b> <code>{phone}</code> :\n<code>{sms_res['sms']}</code>", parse_mode=ParseMode.HTML)
                     except Exception:
                         pass
                 else:
-                    await query.message.reply_text(f"ℹ️ {sms_res['message']}")
+                    pass
             except Exception as e:
                 logger.error(f"Error fetching SMS for {phone}: {e}")
                 await query.message.reply_text("❌ فشل جلب الكود، حاول لاحقًا.")
