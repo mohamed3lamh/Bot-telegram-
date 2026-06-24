@@ -379,14 +379,29 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
             await safe_answer(query, "❌ الحساب المرتبط بهذا الرقم غير موجود!", show_alert=True)
             return
 
-        if action == "code":
+         if action == "code":
             await safe_answer(query, "⏳ جاري طلب الكود يرجى الانتظار", show_alert=True)
             try:
                 sms_res = await DurianAPI.get_sms(username, api_key, phone)
                 if sms_res["status"] == "success":
-                    updated_text = query.message.text_html.replace("قـيـد الإنـتـظـار ❗️", f"<b>{sms_res['sms']}</b> ✅")
+                    # استخراج سطر الدولة من النص القديم
+                    old_text = query.message.text_html
+                    country_line = ""
+                    for line in old_text.split("\n"):
+                        if "- الـدولـة :" in line:
+                            country_line = line.strip()
+                            break
+                    
+                    # بناء النص الجديد
+                    updated_text = (
+                        f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
+                        f"<b>    - الـرقـــــم : <code>{phone}</code></b>\n"
+                        f"<b>    {country_line}</b>\n"
+                        f"<b>    - الـحـالـة : ✅ تـم الـوصـول</b>\n"
+                        f"<b>    - الــكـــود : {sms_res['sms']}</b>"
+                    )
                     try:
-                        await query.message.edit_text(text=updated_text, reply_markup=query.message.reply_markup, parse_mode=ParseMode.HTML)
+                        await query.message.edit_text(text=updated_text, reply_markup=None, parse_mode=ParseMode.HTML)
                         await query.message.reply_text(f"📥 <b>وصول كود جديد للرقم</b> <code>{phone}</code> :\n<code>{sms_res['sms']}</code>", parse_mode=ParseMode.HTML)
                     except Exception:
                         pass
@@ -395,7 +410,6 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
             except Exception as e:
                 logger.error(f"Error fetching SMS for {phone}: {e}")
                 await query.message.reply_text("❌ فشل جلب الكود، حاول لاحقًا.")
-
         elif action == "cancel":
             try:
                 success = await DurianAPI.cancel_number(username, api_key, phone)
