@@ -166,7 +166,7 @@ async def show_settings(update: Update, user_id: int):
 
 # ==================== 3. إدارة الحسابات ====================
 async def show_manage_accounts(update: Update, user_id: int):
-    """عرض جميع حسابات DurianRCS مع تحكم كامل (تفعيل/تعطيل/حذف)"""
+    """عرض جميع حسابات DurianRCS مع أيقونة الحالة فقط"""
     accounts = db.get_all_site_accounts(user_id)
     if not accounts:
         text = "👤 **إدارة الحسابات:**\n\nلا توجد حسابات مضافة. أضف حسابًا للبدء."
@@ -175,24 +175,48 @@ async def show_manage_accounts(update: Update, user_id: int):
             [InlineKeyboardButton("‹ رجوع ›", callback_data="bot_settings")]
         ]
     else:
-        text = "👤 **إدارة الحسابات:**\n\nالحساب النشط (🟢) سيُستخدم في الصيد. اضغط على 'تفعيل' أو 'تعطيل' للتحكم بكل حساب على حدة."
+        text = "👤 **إدارة الحسابات:**\n\nاختر الحساب الذي تريد إدارته:"
         keyboard = []
         for acc_id, username, api_key, is_active in accounts:
-            status_icon = "🟢" if is_active else "⚪"
-            btn_text = f"{status_icon} {username}"
-            toggle_data = f"toggle_site_{acc_id}"
-            delete_data = f"delete_site_{acc_id}"
-            keyboard.append([
-                InlineKeyboardButton(btn_text, callback_data="noop"),
-                InlineKeyboardButton("تفعيل" if not is_active else "تعطيل", callback_data=toggle_data),
-                InlineKeyboardButton("🗑️ حذف", callback_data=delete_data)
-            ])
+            status_icon = "🟢 مفعل" if is_active else "🔴 معطل"
+            btn_text = f"{status_icon} - {username}"
+            # عند الضغط على الحساب، ننتقل إلى شاشة التفاصيل
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"account_detail_{acc_id}")])
         keyboard.append([InlineKeyboardButton("➕ إضافة حساب جديد", callback_data="add_new_site_account")])
         keyboard.append([InlineKeyboardButton("‹ رجوع ›", callback_data="bot_settings")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
 
+async def show_account_detail(update: Update, user_id: int, account_id: int):
+    """عرض تفاصيل حساب واحد مع أزرار الإجراءات"""
+    accounts = db.get_all_site_accounts(user_id)
+    acc = None
+    for a in accounts:
+        if a[0] == account_id:
+            acc = a
+            break
+    if not acc:
+        await update.callback_query.answer("الحساب غير موجود.", show_alert=True)
+        return
+
+    acc_id, username, api_key, is_active = acc
+    status_text = "🟢 مفعل" if is_active else "🔴 معطل"
+    text = (
+        f"👤 **تفاصيل الحساب:**\n\n"
+        f"📌 اسم المستخدم: `{username}`\n"
+        f"🔑 API Key: `{api_key[:10]}...`\n"
+        f"📊 الحالة: {status_text}\n\n"
+        f"اختر الإجراء المطلوب:"
+    )
+    keyboard = [
+        [InlineKeyboardButton("تفعيل ✅" if not is_active else "تعطيل ❌", callback_data=f"toggle_site_{acc_id}")],
+        [InlineKeyboardButton("🗑️ حذف الحساب", callback_data=f"delete_site_{acc_id}")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="manage_accounts")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    
 # ==================== 4. معالجة الإدخالات النصية ====================
 async def handle_user_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user:
@@ -246,11 +270,16 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
     elif data == "manage_accounts":
         await show_manage_accounts(update, user_id)
         return
+    elif data.startswith("account_detail_"):
+        acc_id = int(data.split("_")[2])
+        await show_account_detail(update, user_id, acc_id)
+        return
     elif data.startswith("toggle_site_"):
         acc_id = int(data.split("_")[2])
         db.toggle_site_account(user_id, acc_id)
         await query.answer("✅ تم تبديل حالة الحساب", show_alert=False)
-        await show_manage_accounts(update, user_id)
+        # العودة إلى شاشة تفاصيل الحساب
+        await show_account_detail(update, user_id, acc_id)
         return
     elif data.startswith("delete_site_"):
         acc_id = int(data.split("_")[2])
@@ -260,6 +289,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
             return
         db.delete_site_account(user_id, acc_id)
         await query.answer("🗑️ تم حذف الحساب", show_alert=False)
+        # العودة إلى قائمة الحسابات بعد الحذف
         await show_manage_accounts(update, user_id)
         return
     elif data == "noop":
