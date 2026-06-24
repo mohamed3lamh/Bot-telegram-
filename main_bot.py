@@ -62,6 +62,28 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name
     text = update.message.text.strip()
 
+    if ADMIN_ID != 0 and user_id == ADMIN_ID and context.user_data.get("admin_action") == "ticket_reply":
+        ticket_id = context.user_data.get("replying_ticket_id")
+        if ticket_id:
+            reply_text = text
+            db.reply_ticket(ticket_id, reply_text)
+            db.log_activity(user_id, "رد على تذكرة", f"Ticket #{ticket_id}")
+            await update.message.reply_text("✅ تم إرسال الرد وإغلاق التذكرة.")
+            context.user_data.pop("admin_action", None)
+            context.user_data.pop("replying_ticket_id", None)
+            return
+
+    # معالجة تعديل الإعدادات
+    if ADMIN_ID != 0 and user_id == ADMIN_ID and context.user_data.get("admin_action") == "edit_setting":
+        key = context.user_data.get("editing_setting_key")
+        if key:
+            db.set_setting(key, text)
+            db.log_activity(user_id, "تعديل إعداد", f"{key} = {text}")
+            await update.message.reply_text(f"✅ تم تحديث {key} إلى {text}")
+            context.user_data.pop("admin_action", None)
+            context.user_data.pop("editing_setting_key", None)
+            return
+            
     if ADMIN_ID != 0 and user_id == ADMIN_ID and context.user_data.get("admin_action"):
         action = context.user_data.get("admin_action")
         table_name = get_correct_table_name()
@@ -70,6 +92,7 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 target_id, value = text.split(" ")
                 target_id = int(target_id)
                 db.add_days_to_user(target_id, int(value))
+                db.log_activity(user_id, "إضافة أيام", f"للمستخدم {target_id} - {value} يوم")
                 await update.message.reply_text(f"✅ تم إضافة {value} يوم للمستخدم `{target_id}` بنجاح.")
             except Exception:
                 await update.message.reply_text("❌ صيغة خاطئة. يرجى إدخال: `المعرف القيمة` (مثال: `834033986 30`)")
@@ -80,6 +103,7 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 target_id, value = text.split(" ")
                 target_id = int(target_id)
                 db.ban_user(target_id, int(value))
+                db.log_activity(user_id, "حظر/إلغاء حظر", f"مستخدم {target_id} - حالة {value}")
                 status_text = "حظر" if int(value) == 1 else "إلغاء حظر"
                 await update.message.reply_text(f"✅ تم تعديل حالة المستخدم `{target_id}` إلى: **{status_text}**.")
             except Exception:
@@ -97,6 +121,7 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cursor = conn.cursor()
                 cursor.execute(f"DELETE FROM {table_name} WHERE user_id = %s", (target_id,))
                 conn.commit()
+                db.log_activity(user_id, "حذف مستخدم", f"المستخدم {target_id}")
                 cursor.close()
                 conn.close()
                 await update.message.reply_text(f"🗑️ تم حذف المستخدم `{target_id}` نهائياً من الجدول `{table_name}` وإيقاف خط السحب الخاص به.")
@@ -194,6 +219,14 @@ async def show_admin_panel(update: Update):
             InlineKeyboardButton("🆔 استخراج الـ IDs", callback_data="adm_get_ids")
         ],
         [
+            InlineKeyboardButton("👥 إدارة المستخدمين", callback_data="adm_user_management"),
+            InlineKeyboardButton("📋 سجل العمليات", callback_data="adm_activity_log")
+        ],
+        [
+            InlineKeyboardButton("🎫 تذاكر الدعم", callback_data="adm_tickets"),
+            InlineKeyboardButton("⚙️ إعدادات الأسعار", callback_data="adm_settings")
+        ],
+        [
             InlineKeyboardButton("⚙️ إضافة حساب فاحص", callback_data="adm_add_checker"),
             InlineKeyboardButton("👥 إدارة الحسابات الفاحصة", callback_data="adm_manage_checkers")
         ],
@@ -207,6 +240,158 @@ async def show_admin_panel(update: Update):
     else:
         await update.message.reply_text(text, reply_markup=reply_markup)
 
+# ---------- إدارة المستخدمين المتقدمة ----------
+async def show_user_management(update: Update, page=0):
+    query = update.callback_query
+    per_page = 10
+    offset = page * per_page
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, token, is_active, expires_at, is_banned FROM user_bots ORDER BY user_id LIMIT %s OFFSET %s", (per_page, offset))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        await query.answer(f"خطأ: {e}", show_alert=True)
+        return
+
+    if not rows:
+        text = "لا يوجد مستخدمون."
+        keyboard = [[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="admin_panel")]]
+    else:
+        text = "👥 **قائمة المستخدمين:**\n\n"
+        keyboard = []
+        for r in rows:
+            uid, _, is_active, expires_at, is_banned = r
+            status = "🟢 نشط" if is_active else "🔴 متوقف"
+            if is_banned:
+                status = "🚫 محظور"
+            exp = "غير محدد"
+            if expires_at:
+                if isinstance(expires_at, str):
+                    expires_at = datetime.fromisoformat(expires_at.replace("Z", ""))
+                exp = expires_at.strftime("%Y-%m-%d")
+            btn_text = f"ID: {uid} - {status} - {exp}"
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"user_detail_{uid}")])
+        # أزرار التنقل بين الصفحات
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"user_page_{page-1}"))
+        # بفرض وجود المزيد (فحص بسيط)
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM user_bots")
+        total = cursor.fetchone()[0]
+        cursor.close()
+        conn.close()
+        if offset + per_page < total:
+            nav_row.append(InlineKeyboardButton("التالي ➡️", callback_data=f"user_page_{page+1}"))
+        if nav_row:
+            keyboard.append(nav_row)
+        keyboard.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="admin_panel")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+
+async def show_user_detail(update: Update, user_id: int):
+    query = update.callback_query
+    data = db.get_bot(user_id)
+    if not data:
+        await query.answer("المستخدم غير موجود", show_alert=True)
+        return
+    token, is_active, expires_at, is_banned = data
+    status = "نشط" if is_active else "متوقف"
+    banned = "نعم" if is_banned else "لا"
+    exp_text = "غير محدد"
+    if expires_at:
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at.replace("Z", ""))
+        exp_text = expires_at.strftime("%Y-%m-%d %H:%M")
+    # عدد الحسابات المربوطة
+    accounts = db.get_all_site_accounts(user_id)
+    num_accounts = len(accounts)
+    text = (
+        f"👤 **معلومات المستخدم:**\n"
+        f"🆔 المعرف: `{user_id}`\n"
+        f"📌 الحالة: {status}\n"
+        f"🚫 محظور: {banned}\n"
+        f"⏰ انتهاء الاشتراك: {exp_text}\n"
+        f"🗂 حسابات DurianRCS: {num_accounts}\n"
+    )
+    keyboard = [
+        [InlineKeyboardButton("➕ إضافة أيام", callback_data=f"adm_add_days_{user_id}"),
+         InlineKeyboardButton("🚫 حظر/إلغاء", callback_data=f"adm_ban_{user_id}")],
+        [InlineKeyboardButton("🗑️ حذف المستخدم", callback_data=f"adm_delete_user_{user_id}")],
+        [InlineKeyboardButton("🔙 عودة للقائمة", callback_data="adm_user_management")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+
+# ---------- سجل العمليات ----------
+async def show_activity_log(update: Update):
+    query = update.callback_query
+    activities = db.get_recent_activities(30)
+    if not activities:
+        text = "لا توجد عمليات مسجلة حتى الآن."
+    else:
+        lines = []
+        for act in activities:
+            _, uid, action, details, ts = act
+            ts_str = ts.strftime("%m-%d %H:%M") if ts else ""
+            lines.append(f"🕒 {ts_str} | 👤 {uid} | {action} | {details}")
+        text = "📋 **آخر العمليات:**\n\n" + "\n".join(lines)
+    keyboard = [[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="admin_panel")]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+# ---------- تذاكر الدعم ----------
+async def show_tickets(update: Update):
+    query = update.callback_query
+    tickets = db.get_open_tickets()
+    if not tickets:
+        text = "🎫 لا توجد تذاكر مفتوحة."
+        keyboard = [[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="admin_panel")]]
+    else:
+        text = "🎫 **تذاكر الدعم المفتوحة:**\n\n"
+        keyboard = []
+        for t in tickets:
+            tid, uid, subject, msg, status, reply, created = t
+            text += f"🎫 #{tid} | 👤 {uid} | {subject}\n{msg[:50]}...\n\n"
+            keyboard.append([InlineKeyboardButton(f"رد / إغلاق #{tid}", callback_data=f"reply_ticket_{tid}")])
+        keyboard.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="admin_panel")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+
+async def handle_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE, ticket_id: int):
+    query = update.callback_query
+    # نطلب من الأدمن إرسال الرد
+    context.user_data["replying_ticket_id"] = ticket_id
+    await query.message.reply_text("📝 أرسل الآن ردك على هذه التذكرة (نص واحد):")
+    # سنحتاج إلى وضع مؤقت لاستقبال الرد. نضيف حالة 'waiting_ticket_reply' في context.user_data
+    context.user_data["admin_action"] = "ticket_reply"
+
+# تعديل handle_token (أو إضافة معالج) لاستقبال رد التذكرة
+# سنضيف داخل handle_token قبل الأقسام الأخرى:
+# if context.user_data.get("admin_action") == "ticket_reply":
+#     process ticket reply
+
+# ---------- إعدادات الأسعار والمحافظ ----------
+async def show_settings(update: Update):
+    query = update.callback_query
+    settings = db.get_all_settings()
+    text = "⚙️ **الإعدادات الحالية:**\n\n"
+    keyboard = []
+    for k, v in settings:
+        text += f"{k}: {v}\n"
+        keyboard.append([InlineKeyboardButton(f"✏️ تعديل {k}", callback_data=f"edit_setting_{k}")])
+    keyboard.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="admin_panel")])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def prompt_edit_setting(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
+    query = update.callback_query
+    context.user_data["editing_setting_key"] = key
+    await query.message.reply_text(f"📝 أدخل القيمة الجديدة لـ {key}:")
+    context.user_data["admin_action"] = "edit_setting"
 # ---------- دوال إدارة الحسابات الفاحصة ----------
 async def show_checker_management(update: Update):
     accounts = db.get_all_checkers()
@@ -399,6 +584,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton("🔙 العودة للوحة الإدارة", callback_data="admin_panel")]]
             await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
             return
+
+        elif query.data == "adm_user_management":
+            await show_user_management(update)
+            return
+        elif query.data.startswith("user_page_"):
+            page = int(query.data.split("_")[-1])
+            await show_user_management(update, page)
+            return
+        elif query.data.startswith("user_detail_"):
+            uid = int(query.data.split("_")[-1])
+            await show_user_detail(update, uid)
+            return
+        elif query.data == "adm_activity_log":
+            await show_activity_log(update)
+            return
+        elif query.data == "adm_tickets":
+            await show_tickets(update)
+            return
+        elif query.data.startswith("reply_ticket_"):
+            tid = int(query.data.split("_")[-1])
+            await handle_reply_ticket(update, context, tid)
+            return
+        elif query.data == "adm_settings":
+            await show_settings(update)
+            return
+        elif query.data.startswith("edit_setting_"):
+            key = query.data[len("edit_setting_"):]
+            await prompt_edit_setting(update, context, key)
+            return
         # زر تأكيد الدفع (للأدمن فقط)
         elif query.data.startswith("confirm_pay_"):
             if user_id != ADMIN_ID:
@@ -411,6 +625,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             plan, method, amount, wallet, _ = pending
             db.add_days_to_user(target_id, 30)
+            db.log_activity(target_id, "تفعيل اشتراك", f"خطة {plan} - 30 يوم")
+            db.log_activity(ADMIN_ID, "تأكيد دفع", f"مستخدم {target_id} - خطة {plan}")
+            db.log_activity(target_id, "تفعيل اشتراك", f"خطة {plan} - 30 يوم")
+            db.log_activity(ADMIN_ID, "تأكيد دفع", f"مستخدم {target_id} - خطة {plan}")
             db.delete_pending_subscription(target_id)
             new_data = db.get_bot(target_id)
             if new_data:
@@ -462,20 +680,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data.startswith("pay_"):
         _, method, plan_num = query.data.split("_")
         method = method.upper()
-        crypto_prices = {
-            "1": {"USDT": "4", "TRX": "25.01"},
-            "2": {"USDT": "6", "TRX": "37.51"},
-            "3": {"USDT": "8", "TRX": "50.02"},
-        }
-        amount = crypto_prices[plan_num][method]
-        wallets = {
-            "USDT": "TYourUSDTAddressHere",
-            "TRX": "TSDqje1oWAcDY8Q5XzUDLWksWMSPqxv3PB",
-        }
-        wallet = wallets[method]
-        currency = "USDT" if method == "USDT" else "TRX"
+
+        # --- جلب الأسعار والمحافظ من الإعدادات الديناميكية ---
+        plan_price = float(db.get_setting(f'plan_price_{plan_num}', '0'))
+        usdt_rate = float(db.get_setting('usdt_rate', '1'))
+        trx_rate = float(db.get_setting('trx_rate', '0.16'))
+        usdt_wallet = db.get_setting('usdt_wallet', 'TYourUSDTAddressHere')
+        trx_wallet = db.get_setting('trx_wallet', 'TSDqje1oWAcDY8Q5XzUDLWksWMSPqxv3PB')
+
+        # حساب المبلغ بالعملة الرقمية بناءً على سعر الصرف
+        if method == "USDT":
+            amount = round(plan_price / usdt_rate, 2) if usdt_rate else plan_price
+            wallet = usdt_wallet
+            currency = "USDT"
+        else:  # TRX
+            amount = round(plan_price / trx_rate, 2) if trx_rate else plan_price * 6.25
+            wallet = trx_wallet
+            currency = "TRX"
+
         plan_name = "حساب واحد" if plan_num == "1" else "حسابين" if plan_num == "2" else "3 حسابات"
+
         db.add_pending_subscription(user_id, plan_name, currency, amount, wallet)
+
+        # إرسال إشعار للإدارة
         admin_msg = (
             f"🔔 طلب اشتراك جديد:\n"
             f"👤 المستخدم: `{user_id}`\n"
@@ -485,6 +712,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         admin_keyboard = [[InlineKeyboardButton("✅ تأكيد الدفع", callback_data=f"confirm_pay_{user_id}")]]
         await context.bot.send_message(chat_id=ADMIN_ID, text=admin_msg, reply_markup=InlineKeyboardMarkup(admin_keyboard))
+
+        # رد للمستخدم
         text = (
             f"💰 لإيداع {amount} {currency}، يرجى إرسال المبلغ إلى العنوان التالي خلال 10 دقائق:\n\n"
             f"<code>{wallet}</code>\n\n"
@@ -496,7 +725,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"فشل تحرير رسالة الدفع: {e}")
             await query.message.reply_text(text, parse_mode="HTML")
         return
-
     # ---------- باقي الأزرار العامة ----------
     if query.data == "main_menu":
         await show_dashboard(update, user_id, user_name)
