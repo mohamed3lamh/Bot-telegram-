@@ -496,7 +496,7 @@ async def get_code_and_verify(update: Update, context: ContextTypes.DEFAULT_TYPE
         result = await login_manager.verify_code(phone, code)
         if result.get("status") == "CODE_EXPIRED":
             await update.message.reply_text("⏳ انتهت صلاحية الكود. تم إرسال كود جديد إلى رقمك. أرسل الكود الجديد:")
-            return CODE
+            return CODE  # يجب أن يعود إلى نفس الحالة لاستقبال الكود الجديد
         if result.get("status") == "PASSWORD_REQUIRED":
             await update.message.reply_text("🔒 هذا الحساب محمي بالتحقق بخطوتين، من فضلك أرسل باسوورد الحساب الآن:")
             return PASSWORD
@@ -508,7 +508,7 @@ async def get_code_and_verify(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ خطأ برميجي أثناء تفعيل الكود: `{str(e)}`")
         await login_manager.cleanup()
         return ConversationHandler.END
-
+        
 async def get_password_and_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     password = update.message.text.strip()
     logger.info(f"[TRACE] Checker state received message (PASSWORD state)")
