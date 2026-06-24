@@ -60,14 +60,12 @@ class LoginManager:
             return await self._finish_login(phone)
         except SessionPasswordNeededError:
             return {"status": "PASSWORD_REQUIRED"}
-        except PhoneCodeInvalidError:
-            raise Exception("كود التحقق غير صحيح.")
         except PhoneCodeExpiredError:
             # إعادة إرسال الكود تلقائياً
             try:
                 result = await client.send_code_request(phone)
-                data["phone_code_hash"] = result.phone_code_hash
-                # إعلام المستخدم بأن الكود انتهت صلاحيته وتم إرسال كود جديد
+                # تحديث phone_code_hash في البيانات المخزنة
+                self.pending[phone]["phone_code_hash"] = result.phone_code_hash
                 return {"status": "CODE_EXPIRED", "message": "انتهت صلاحية الكود. تم إرسال كود جديد، يرجى إدخاله."}
             except Exception as e:
                 await client.disconnect()
