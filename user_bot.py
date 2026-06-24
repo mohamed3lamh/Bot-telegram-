@@ -356,6 +356,40 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
             for job in current_jobs:
                 job.schedule_removal()
         await query.answer("🛑 تم إيقاف الصيد بنجاح.", show_alert=True)
+
+    elif data.startswith("country_settings_"):
+        country_code = data.split("_", 2)[-1]
+        await show_country_settings(update, user_id, country_code)
+        return
+
+    elif data.startswith("set_number_type_"):
+        country_code = data.replace("set_number_type_", "")
+        await show_number_type_options(update, user_id, country_code)
+        return
+
+    elif data.startswith("save_number_type_"):
+        # الصيغة: save_number_type_COUNTRYCODE_VALUE
+        parts = data.split("_")
+        country_code = parts[3]
+        value = parts[4]
+        db.update_country_settings(user_id, country_code, number_type=value)
+        await query.answer("✔️ تم تحديث نوع الرقم", show_alert=True)
+        await show_country_settings(update, user_id, country_code)
+        return
+
+    elif data.startswith("set_session_status_"):
+        country_code = data.replace("set_session_status_", "")
+        await show_session_status_options(update, user_id, country_code)
+        return
+
+    elif data.startswith("save_session_status_"):
+        parts = data.split("_")
+        country_code = parts[3]
+        value = parts[4]
+        db.update_country_settings(user_id, country_code, session_status=value)
+        await query.answer("✔️ تم تحديث حالة الجلسة", show_alert=True)
+        await show_country_settings(update, user_id, country_code)
+        return
     elif data.startswith("add_country_page_"):
         page = int(data.split("_")[-1])
         items_per_page = 23
@@ -479,14 +513,50 @@ async def safe_answer(query, text=None, show_alert=False):
     except Exception as e:
         logger.warning(f"Failed to answer callback query: {e}")
 
+async def show_number_type_options(update: Update, user_id: int, country_code: str):
+    """عرض خيارات نوع الرقم"""
+    country_name = country_code
+    for c in ALL_COUNTRIES:
+        if c["code"] == country_code:
+            country_name = c["name"]
+            break
+    
+    text = f"📱 **اختر نوع الرقم لـ {country_name}:**"
+    keyboard = [
+        [InlineKeyboardButton("📱 شغال", callback_data=f"save_number_type_{country_code}_working")],
+        [InlineKeyboardButton("🚫 محظور", callback_data=f"save_number_type_{country_code}_banned")],
+        [InlineKeyboardButton("🌐 الكل", callback_data=f"save_number_type_{country_code}_all")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data=f"country_settings_{country_code}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
+
+async def show_session_status_options(update: Update, user_id: int, country_code: str):
+    """عرض خيارات حالة الجلسة"""
+    country_name = country_code
+    for c in ALL_COUNTRIES:
+        if c["code"] == country_code:
+            country_name = c["name"]
+            break
+    
+    text = f"🔍 **اختر حالة الجلسة لـ {country_name}:**"
+    keyboard = [
+        [InlineKeyboardButton("✅ بدون جلسة", callback_data=f"save_session_status_{country_code}_no_session")],
+        [InlineKeyboardButton("👤 لديه جلسة", callback_data=f"save_session_status_{country_code}_has_session")],
+        [InlineKeyboardButton("🔄 الاثنين معاً", callback_data=f"save_session_status_{country_code}_all")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data=f"country_settings_{country_code}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
 # ==================== 6. عرض وإدارة الدول المختارة ====================
 async def show_manage_countries(update: Update, user_id: int):
+    """عرض قائمة الدول المختارة مع أيقونات الإعدادات"""
     countries = db.get_user_countries(user_id)
     if not countries:
         text = "🌍 **لم تقم بإضافة أي دولة بعد.**\n\nاستخدم زر 'اضافه دوله' لتفعيل الصيد من دول معينة."
         keyboard = [[InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="main_menu")]]
     else:
-        text = "🌍 **الدول المفعلة حاليًا:**\n\nاضغط على أي دولة لحذفها من قائمة الصيد."
+        text = "🌍 **الدول المفعلة حاليًا:**\n\nاضغط على أي دولة للدخول إلى إعداداتها."
         keyboard = []
         for code in countries:
             country_name = code
@@ -494,11 +564,46 @@ async def show_manage_countries(update: Update, user_id: int):
                 if c["code"] == code:
                     country_name = c["name"]
                     break
-            keyboard.append([InlineKeyboardButton(f"🗑️ {country_name}", callback_data=f"delete_country_{code}")])
+            # زر الدولة ينقلك إلى الإعدادات
+            keyboard.append([InlineKeyboardButton(f"⚙️ {country_name}", callback_data=f"country_settings_{code}")])
         keyboard.append([InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="main_menu")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
+async def show_country_settings(update: Update, user_id: int, country_code: str):
+    """عرض شاشة إعدادات دولة محددة"""
+    # جلب اسم الدولة
+    country_name = country_code
+    for c in ALL_COUNTRIES:
+        if c["code"] == country_code:
+            country_name = c["name"]
+            break
+    
+    # جلب الإعدادات الحالية
+    settings = db.get_country_settings(user_id, country_code)
+    number_type = settings.get("number_type", "all")
+    session_status = settings.get("session_status", "all")
+    
+    # ترجمة الإعدادات إلى نصوص مفهومة
+    number_type_text = {"all": "الكل", "banned": "محظور", "working": "شغال"}.get(number_type, "الكل")
+    session_text = {"all": "الاثنين معاً", "no_session": "بدون جلسة", "has_session": "لديه جلسة"}.get(session_status, "الاثنين معاً")
+    
+    text = (
+        f"🌍 **إعدادات الدولة:** {country_name}\n\n"
+        f"يمكنك تعديل الإعدادات التالية:\n\n"
+        f"• <b>نوع الرقم:</b> {number_type_text}\n"
+        f"• <b>حالة الجلسة:</b> {session_text}\n\n"
+        f"اختر الإعداد الذي تريد تغييره:"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton(f"📱 نوع الرقم: {number_type_text}", callback_data=f"set_number_type_{country_code}")],
+        [InlineKeyboardButton(f"🔍 حالة الجلسة: {session_text}", callback_data=f"set_session_status_{country_code}")],
+        [InlineKeyboardButton("🗑️ حذف الدولة", callback_data=f"delete_country_{country_code}")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="manage_countries")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
 # ==================== 7. دالة الصيد والضخ ====================
 async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
