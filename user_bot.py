@@ -379,7 +379,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
             await safe_answer(query, "❌ الحساب المرتبط بهذا الرقم غير موجود!", show_alert=True)
             return
 
-         if action == "code":
+        if action == "code":
             await safe_answer(query, "⏳ جاري طلب الكود يرجى الانتظار", show_alert=True)
             try:
                 sms_res = await DurianAPI.get_sms(username, api_key, phone)
