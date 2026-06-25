@@ -62,6 +62,24 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name
     text = update.message.text.strip()
 
+    if context.user_data.get("waiting_for_token"):
+        context.user_data.pop("waiting_for_token", None)
+        # التحقق من صحة التوكن
+        is_valid = await bot_manager.validate_token(text)
+        if not is_valid:
+            await update.message.reply_text("❌ التوكن غير صالح! تأكد من الحصول عليه بشكل صحيح من @BotFather.")
+            return
+        try:
+            db.save_bot(user_id, text)
+            await update.message.reply_text(
+                f"✅ تم تحديث توكن البوت بنجاح\n\n"
+                f"🔑 التوكن: <code>{text}</code>",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ خطأ في قاعدة البيانات: {e}")
+        return
+
     if ADMIN_ID != 0 and user_id == ADMIN_ID and context.user_data.get("admin_action") == "ticket_reply":
         ticket_id = context.user_data.get("replying_ticket_id")
         if ticket_id:
@@ -735,9 +753,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "show_token_info":
         if not token:
-            await query.message.reply_text("📥 لم تقم بربط توكن حتى الآن.")
+            text = (
+                f"📝 يرجى إرسال توكن البوت فقط:\n\n"
+                f"مثال:\n"
+                f"<code>123456789:ABC-DEF1234ghIkl-zyx57W2v1u123ew</code>"
+            )
+            await query.message.reply_text(text, parse_mode="HTML")
+            # نجعل البوت ينتظر التوكن الجديد
+            context.user_data["waiting_for_token"] = True
         else:
-            await query.message.reply_text(f"🔑 توكنك المسجل الحالي هو:\n`{token}`")
+            await query.message.reply_text(f"🔑 توكنك المسجل الحالي هو:\n<code>{token}</code>", parse_mode="HTML")
+        return
     elif query.data == "run_bot":
         if not token:
             await query.message.reply_text("⚠️ يرجى إرسال توكن البوت أولاً لربطه.")
