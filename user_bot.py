@@ -166,8 +166,10 @@ async def show_settings(update: Update, user_id: int):
 
 # ==================== 3. إدارة الحسابات ====================
 async def show_manage_accounts(update: Update, user_id: int):
-    """عرض جميع حسابات DurianRCS مع أيقونة الحالة فقط"""
     accounts = db.get_all_site_accounts(user_id)
+    plan = db.get_user_plan(user_id)  # "1", "2", "3"
+    max_accounts = int(plan)
+    # ... باقي الكود ...
     if not accounts:
         text = "👤 **إدارة الحسابات:**\n\nلا توجد حسابات مضافة. أضف حسابًا للبدء."
         keyboard = [
@@ -175,19 +177,16 @@ async def show_manage_accounts(update: Update, user_id: int):
             [InlineKeyboardButton("‹ رجوع ›", callback_data="bot_settings")]
         ]
     else:
-        text = "👤 **إدارة الحسابات:**\n\nاختر الحساب الذي تريد إدارته:"
+        text = f"👤 **إدارة الحسابات (الحد الأقصى: {max_accounts} حسابات):**\n\nاختر الحساب الذي تريد إدارته:"
         keyboard = []
         for acc_id, username, api_key, is_active in accounts:
             status_icon = "🟢 مفعل" if is_active else "🔴 معطل"
             btn_text = f"{status_icon} - {username}"
-            # عند الضغط على الحساب، ننتقل إلى شاشة التفاصيل
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"account_detail_{acc_id}")])
-        keyboard.append([InlineKeyboardButton("➕ إضافة حساب جديد", callback_data="add_new_site_account")])
+        if len(accounts) < max_accounts:
+            keyboard.append([InlineKeyboardButton("➕ إضافة حساب جديد", callback_data="add_new_site_account")])
         keyboard.append([InlineKeyboardButton("‹ رجوع ›", callback_data="bot_settings")])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
-
+    # ...
 async def show_account_detail(update: Update, user_id: int, account_id: int):
     """عرض تفاصيل حساب واحد مع أزرار الإجراءات"""
     accounts = db.get_all_site_accounts(user_id)
@@ -274,13 +273,22 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         acc_id = int(data.split("_")[2])
         await show_account_detail(update, user_id, acc_id)
         return
+
     elif data.startswith("toggle_site_"):
         acc_id = int(data.split("_")[2])
-        db.toggle_site_account(user_id, acc_id)
+        try:
+            db.toggle_site_account(user_id, acc_id)
+        except Exception as e:
+            if "MAX_ACTIVE_REACHED" in str(e):
+                plan = db.get_user_plan(user_id)
+                await query.answer(f"❌ خطتك تسمح بتفعيل {plan} حسابات فقط.", show_alert=True)
+            else:
+                await query.answer(f"❌ خطأ: {e}", show_alert=True)
+            return
         await query.answer("✅ تم تبديل حالة الحساب", show_alert=False)
-        # العودة إلى شاشة تفاصيل الحساب
         await show_account_detail(update, user_id, acc_id)
         return
+        
     elif data.startswith("delete_site_"):
         acc_id = int(data.split("_")[2])
         accounts = db.get_all_site_accounts(user_id)
@@ -303,9 +311,17 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
             "2️⃣ قم بنسخ **معرف القناة (Channel ID)** وإرساله هنا كرسالة نصية.\n\n"
             "💡 *نصيحة:* إذا كانت القناة عامة، أرسل الرابط المخفف كمعرف (مثل: `@MyHuntingChannel`). وإذا كانت خاصة، أرسل معرفها الرقمي الطويل المبتدئ بـ -100."
         )
+
     elif data == "add_new_site_account":
-        context.user_data["waiting_for_username"] = True
-        await query.message.reply_text("📥 فضلاً، أرسل الآن **اسم المستخدم (Username)** الخاص بحسابك في موقع DurianRCS:")
+    plan = db.get_user_plan(user_id)
+    max_accounts = int(plan)
+    accounts = db.get_all_site_accounts(user_id)
+    if len(accounts) >= max_accounts:
+        await query.answer(f"❌ خطتك تسمح بـ {max_accounts} حسابات فقط.", show_alert=True)
+        return
+    context.user_data["waiting_for_username"] = True
+    await query.message.reply_text("📥 فضلاً، أرسل الآن **اسم المستخدم (Username)** الخاص بحسابك في موقع DurianRCS:")
+    
     elif data == "manage_countries":
         await show_manage_countries(update, user_id)
         return
