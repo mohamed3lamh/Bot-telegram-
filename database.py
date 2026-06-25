@@ -39,7 +39,6 @@ def get_connection():
             time.sleep(2)
 
 def init_db():
-def init_db():
     conn = get_connection()
     cursor = conn.cursor()
 
