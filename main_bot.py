@@ -642,9 +642,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer("لا يوجد طلب معلق.", show_alert=True)
                 return
             plan, method, amount, wallet, _ = pending
-            db.add_days_to_user(target_id, 30)
-            db.log_activity(target_id, "تفعيل اشتراك", f"خطة {plan} - 30 يوم")
-            db.log_activity(ADMIN_ID, "تأكيد دفع", f"مستخدم {target_id} - خطة {plan}")
+
+            if "حسابين" in plan:
+                plan_num = "2"
+            elif "3 حسابات" in plan:
+                plan_num = "3"
+            else:
+                plan_num = "1"
+
+            db.add_days_to_user(target_id, 30, plan_type=plan_num)
             db.log_activity(target_id, "تفعيل اشتراك", f"خطة {plan} - 30 يوم")
             db.log_activity(ADMIN_ID, "تأكيد دفع", f"مستخدم {target_id} - خطة {plan}")
             db.delete_pending_subscription(target_id)
