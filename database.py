@@ -39,8 +39,14 @@ def get_connection():
             time.sleep(2)
 
 def init_db():
+def init_db():
     conn = get_connection()
     cursor = conn.cursor()
+
+    # تعريف دالة column_exists قبل استخدامها
+    def column_exists(table, column):
+        cursor.execute(f"SELECT COUNT(*) FROM information_schema.columns WHERE table_name='{table}' AND column_name='{column}'")
+        return cursor.fetchone()[0] > 0
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_bots (
@@ -53,13 +59,10 @@ def init_db():
     ''')
     conn.commit()
 
+    # إضافة عمود plan_type إذا لم يكن موجوداً (مع المسافة البادئة الصحيحة)
     if not column_exists('user_bots', 'plan_type'):
-    cursor.execute("ALTER TABLE user_bots ADD COLUMN plan_type TEXT DEFAULT '1'")
-    conn.commit()
-
-    def column_exists(table, column):
-        cursor.execute(f"SELECT COUNT(*) FROM information_schema.columns WHERE table_name='{table}' AND column_name='{column}'")
-        return cursor.fetchone()[0] > 0
+        cursor.execute("ALTER TABLE user_bots ADD COLUMN plan_type TEXT DEFAULT '1'")
+        conn.commit()
 
     if not column_exists('user_bots', 'expires_at'):
         cursor.execute("ALTER TABLE user_bots ADD COLUMN expires_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP + INTERVAL '30 days'")
@@ -74,6 +77,7 @@ def init_db():
             channel_id TEXT NOT NULL
         )
     ''')
+    conn.commit()
     conn.commit()
 
     cursor.execute('''
