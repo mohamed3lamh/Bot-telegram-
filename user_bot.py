@@ -313,15 +313,15 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         )
 
     elif data == "add_new_site_account":
-    plan = db.get_user_plan(user_id)
-    max_accounts = int(plan)
-    accounts = db.get_all_site_accounts(user_id)
-    if len(accounts) >= max_accounts:
-        await query.answer(f"❌ خطتك تسمح بـ {max_accounts} حسابات فقط.", show_alert=True)
-        return
-    context.user_data["waiting_for_username"] = True
-    await query.message.reply_text("📥 فضلاً، أرسل الآن **اسم المستخدم (Username)** الخاص بحسابك في موقع DurianRCS:")
-    
+        plan = db.get_user_plan(user_id)
+        max_accounts = int(plan)
+        accounts = db.get_all_site_accounts(user_id)
+        if len(accounts) >= max_accounts:
+            await query.answer(f"❌ خطتك تسمح بـ {max_accounts} حسابات فقط.", show_alert=True)
+            return
+        context.user_data["waiting_for_username"] = True
+        await query.message.reply_text("📥 فضلاً، أرسل الآن **اسم المستخدم (Username)** الخاص بحسابك في موقع DurianRCS:")
+        
     elif data == "manage_countries":
         await show_manage_countries(update, user_id)
         return
