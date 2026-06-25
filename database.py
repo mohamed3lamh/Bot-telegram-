@@ -53,6 +53,10 @@ def init_db():
     ''')
     conn.commit()
 
+    if not column_exists('user_bots', 'plan_type'):
+    cursor.execute("ALTER TABLE user_bots ADD COLUMN plan_type TEXT DEFAULT '1'")
+    conn.commit()
+
     def column_exists(table, column):
         cursor.execute(f"SELECT COUNT(*) FROM information_schema.columns WHERE table_name='{table}' AND column_name='{column}'")
         return cursor.fetchone()[0] > 0
@@ -246,7 +250,13 @@ def save_site_account_v2(user_id, username, api_key):
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        # لم نعد نعطل الحسابات الأخرى، فقط نضيف/نحدث هذا الحساب ونجعله نشطًا
+        # حد الحسابات بناءً على الخطة
+        plan = get_user_plan(user_id)
+        max_accounts = int(plan)
+        cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s", (user_id,))
+        count = cursor.fetchone()[0]
+        if count >= max_accounts:
+            raise Exception("MAX_ACCOUNTS_REACHED")
         cursor.execute("""
             INSERT INTO user_site_accounts (user_id, username, api_key, is_active)
             VALUES (%s, %s, %s, TRUE)
@@ -269,10 +279,21 @@ def get_all_site_accounts(user_id):
         conn.close()
 
 def toggle_site_account(user_id, account_id):
-    """تبديل حالة حساب واحد (نشط/غير نشط) دون التأثير على باقي الحسابات"""
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        cursor.execute("SELECT is_active FROM user_site_accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
+        row = cursor.fetchone()
+        if not row:
+            return
+        current_status = row[0]
+        if not current_status:  # سيُفعّل الآن
+            plan = get_user_plan(user_id)
+            max_active = int(plan)
+            cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
+            active_count = cursor.fetchone()[0]
+            if active_count >= max_active:
+                raise Exception("MAX_ACTIVE_REACHED")
         cursor.execute("""
             UPDATE user_site_accounts
             SET is_active = NOT is_active
@@ -337,19 +358,38 @@ def save_bot(user_id, token):
     cursor.close()
     conn.close()
 
-def add_days_to_user(user_id, days):
+def add_days_to_user(user_id, days, plan_type=None):
     conn = get_connection()
     cursor = conn.cursor()
-    # إنشاء سجل افتراضي إذا لم يكن موجودًا، ثم إضافة الأيام
-    cursor.execute('''
-        INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned)
-        VALUES (%s, '', 0, CURRENT_TIMESTAMP + CAST(%s AS INTERVAL), 0)
-        ON CONFLICT (user_id) DO UPDATE
-        SET expires_at = GREATEST(user_bots.expires_at, CURRENT_TIMESTAMP) + CAST(%s AS INTERVAL)
-    ''', (user_id, f"{days} days", f"{days} days"))
+    # إنشاء سجل افتراضي إذا لم يكن موجودًا، مع إضافة الأيام وتحديث الخطة إذا أعطيت
+    if plan_type:
+        cursor.execute('''
+            INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned, plan_type)
+            VALUES (%s, '', 0, CURRENT_TIMESTAMP + CAST(%s AS INTERVAL), 0, %s)
+            ON CONFLICT (user_id) DO UPDATE
+            SET expires_at = GREATEST(user_bots.expires_at, CURRENT_TIMESTAMP) + CAST(%s AS INTERVAL),
+                plan_type = EXCLUDED.plan_type
+        ''', (user_id, f"{days} days", plan_type, f"{days} days"))
+    else:
+        cursor.execute('''
+            INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned)
+            VALUES (%s, '', 0, CURRENT_TIMESTAMP + CAST(%s AS INTERVAL), 0)
+            ON CONFLICT (user_id) DO UPDATE
+            SET expires_at = GREATEST(user_bots.expires_at, CURRENT_TIMESTAMP) + CAST(%s AS INTERVAL)
+        ''', (user_id, f"{days} days", f"{days} days"))
     conn.commit()
     cursor.close()
     conn.close()
+
+def get_user_plan(user_id):
+    """جلب نوع خطة المستخدم (1, 2, 3)"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT plan_type FROM user_bots WHERE user_id = %s", (user_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row[0] if row else '1'
 
 def ban_user(user_id, status):
     conn = get_connection()
