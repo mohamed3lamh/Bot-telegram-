@@ -628,24 +628,33 @@ async def show_country_settings(update: Update, user_id: int, country_code: str)
     
     # زر حالة الجلسة (دورة: all -> no_session -> has_session -> all)
     if session_status == "all":
-        btn_session = "🔄 الاثنين معاً"
+        btn_session = "✅ الاثنين معاً"
     elif session_status == "no_session":
         btn_session = "🟢 بدون جلسة فقط"
     elif session_status == "has_session":
         btn_session = "🔴 لديه جلسة فقط"
     else:
-        btn_session = "🔄 الاثنين معاً"
+        btn_session = "✅ الاثنين معاً"
     
     text = (
-        f"🌍 **إعدادات الدولة:** {country_name} {country_flag}\n\n"
-        f"اختر الإعدادات المطلوبة مباشرة:"
+        f"🌍 **إعدادات الدولة**\n\n"
+        f"يمكنك تعديل الإعدادات التالية:\n"
+        f"• نوع الرقم: محظور / شغال\n"
+        f"• حالة الجلسة: بدون جلسة / لديه جلسة / الاثنين معاً\n"
+        f"• حذف الدولة من قائمة الصيد"
     )
     
     keyboard = [
+        # زر اسم الدولة والعلم في الأعلى (للزينة فقط)
+        [InlineKeyboardButton(f"{country_name} {country_flag}", callback_data="noop")],
+        # زر "شغال" و "محظور" بجانب بعضهما
         [InlineKeyboardButton(btn_working, callback_data=f"set_working_{country_code}"),
          InlineKeyboardButton(btn_banned, callback_data=f"set_banned_{country_code}")],
+        # زر حالة الجلسة
         [InlineKeyboardButton(btn_session, callback_data=f"cycle_session_{country_code}")],
+        # زر حذف الدولة
         [InlineKeyboardButton("🗑️ حذف الدولة", callback_data=f"delete_country_{country_code}")],
+        # زر الرجوع
         [InlineKeyboardButton("🔙 رجوع", callback_data="manage_countries")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
