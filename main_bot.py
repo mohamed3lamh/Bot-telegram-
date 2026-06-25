@@ -768,9 +768,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not token:
             await query.message.reply_text("⚠️ يرجى إرسال توكن البوت أولاً لربطه.")
         else:
+            # جلب عدد الحسابات النشطة لمعرفة نوع البوت
+            active_accounts = db.get_active_site_accounts(user_id)
+            num_accounts = len(active_accounts) if active_accounts else 0
+            if num_accounts == 1:
+                bot_type = "حساب واحد"
+            elif num_accounts == 2:
+                bot_type = "حسابين"
+            elif num_accounts >= 3:
+                bot_type = f"{num_accounts} حسابات"
+            else:
+                bot_type = "غير محدد"
+            
             success = await bot_manager.start_bot(user_id, token)
             if success:
-                await query.message.reply_text("✅ تم تشغيل البوت الفرعي بنجاح ممتد!")
+                text = (
+                    f"✅ تم تشغيل البوت بنجاح!\n"
+                    f"🔹 نوع البوت: DurianRCS ({bot_type})\n\n"
+                    f"⚠️ اذا كان بوتك DURIAN ولم يتم تشغيل البوت انتظر 5 دقائق لا تقم بإيقافه"
+                )
+                await query.message.reply_text(text)
             else:
                 await query.message.reply_text("ℹ️ البوت الفرعي يعمل بالفعل في الخلفية.")
             await show_dashboard(update, user_id, user_name)
@@ -778,6 +795,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not token:
             await query.message.reply_text("❌ ليس لديك بوت نشط لإيقافه.")
         else:
+            await query.message.reply_text("⏳ جاري إيقاف البوت، يرجى الانتظار...")
             await bot_manager.stop_bot(user_id)
             await query.message.reply_text("🛑 تم إيقاف البوت بنجاح.")
             await show_dashboard(update, user_id, user_name)
