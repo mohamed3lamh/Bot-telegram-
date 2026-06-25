@@ -166,27 +166,33 @@ async def show_settings(update: Update, user_id: int):
 
 # ==================== 3. إدارة الحسابات ====================
 async def show_manage_accounts(update: Update, user_id: int):
-    accounts = db.get_all_site_accounts(user_id)
-    plan = db.get_user_plan(user_id)  # "1", "2", "3"
-    max_accounts = int(plan)
-    # ... باقي الكود ...
-    if not accounts:
-        text = "👤 **إدارة الحسابات:**\n\nلا توجد حسابات مضافة. أضف حسابًا للبدء."
-        keyboard = [
-            [InlineKeyboardButton("➕ إضافة حساب جديد", callback_data="add_new_site_account")],
-            [InlineKeyboardButton("‹ رجوع ›", callback_data="bot_settings")]
-        ]
-    else:
-        text = f"👤 **إدارة الحسابات (الحد الأقصى: {max_accounts} حسابات):**\n\nاختر الحساب الذي تريد إدارته:"
-        keyboard = []
-        for acc_id, username, api_key, is_active in accounts:
-            status_icon = "🟢 مفعل" if is_active else "🔴 معطل"
-            btn_text = f"{status_icon} - {username}"
-            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"account_detail_{acc_id}")])
-        if len(accounts) < max_accounts:
-            keyboard.append([InlineKeyboardButton("➕ إضافة حساب جديد", callback_data="add_new_site_account")])
-        keyboard.append([InlineKeyboardButton("‹ رجوع ›", callback_data="bot_settings")])
-    # ...
+    try:
+        accounts = db.get_all_site_accounts(user_id)
+        plan = db.get_user_plan(user_id)  # "1", "2", "3"
+        max_accounts = int(plan)
+        if not accounts:
+            text = "👤 **إدارة الحسابات:**\n\nلا توجد حسابات مضافة. أضف حسابًا للبدء."
+            keyboard = [
+                [InlineKeyboardButton("➕ إضافة حساب جديد", callback_data="add_new_site_account")],
+                [InlineKeyboardButton("‹ رجوع ›", callback_data="bot_settings")]
+            ]
+        else:
+            text = f"👤 **إدارة الحسابات (الحد الأقصى: {max_accounts} حسابات):**\n\nاختر الحساب الذي تريد إدارته:"
+            keyboard = []
+            for acc_id, username, api_key, is_active in accounts:
+                status_icon = "🟢 مفعل" if is_active else "🔴 معطل"
+                btn_text = f"{status_icon} - {username}"
+                keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"account_detail_{acc_id}")])
+            if len(accounts) < max_accounts:
+                keyboard.append([InlineKeyboardButton("➕ إضافة حساب جديد", callback_data="add_new_site_account")])
+            keyboard.append([InlineKeyboardButton("‹ رجوع ›", callback_data="bot_settings")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error in show_manage_accounts: {e}")
+        await update.callback_query.answer("❌ حدث خطأ أثناء تحميل الحسابات.", show_alert=True)
+        
 async def show_account_detail(update: Update, user_id: int, account_id: int):
     """عرض تفاصيل حساب واحد مع أزرار الإجراءات"""
     accounts = db.get_all_site_accounts(user_id)
