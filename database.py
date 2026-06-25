@@ -364,22 +364,37 @@ def save_bot(user_id, token):
 def add_days_to_user(user_id, days, plan_type=None):
     conn = get_connection()
     cursor = conn.cursor()
-    # إنشاء سجل افتراضي إذا لم يكن موجودًا، مع إضافة الأيام وتحديث الخطة إذا أعطيت
-    if plan_type:
-        cursor.execute('''
-            INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned, plan_type)
-            VALUES (%s, '', 0, CURRENT_TIMESTAMP + CAST(%s AS INTERVAL), 0, %s)
-            ON CONFLICT (user_id) DO UPDATE
-            SET expires_at = GREATEST(user_bots.expires_at, CURRENT_TIMESTAMP) + CAST(%s AS INTERVAL),
-                plan_type = EXCLUDED.plan_type
-        ''', (user_id, f"{days} days", plan_type, f"{days} days"))
+    # هل يوجد سجل للمستخدم؟
+    cursor.execute('SELECT token FROM user_bots WHERE user_id = %s', (user_id,))
+    row = cursor.fetchone()
+    if row:
+        # تحديث مستخدم موجود
+        if plan_type:
+            cursor.execute('''
+                UPDATE user_bots
+                SET expires_at = GREATEST(expires_at, CURRENT_TIMESTAMP) + CAST(%s AS INTERVAL),
+                    plan_type = %s
+                WHERE user_id = %s
+            ''', (f"{days} days", plan_type, user_id))
+        else:
+            cursor.execute('''
+                UPDATE user_bots
+                SET expires_at = GREATEST(expires_at, CURRENT_TIMESTAMP) + CAST(%s AS INTERVAL)
+                WHERE user_id = %s
+            ''', (f"{days} days", user_id))
     else:
-        cursor.execute('''
-            INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned)
-            VALUES (%s, '', 0, CURRENT_TIMESTAMP + CAST(%s AS INTERVAL), 0)
-            ON CONFLICT (user_id) DO UPDATE
-            SET expires_at = GREATEST(user_bots.expires_at, CURRENT_TIMESTAMP) + CAST(%s AS INTERVAL)
-        ''', (user_id, f"{days} days", f"{days} days"))
+        # إنشاء سجل جديد مع توكن مؤقت فريد
+        temp_token = f'pending_{user_id}'
+        if plan_type:
+            cursor.execute('''
+                INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned, plan_type)
+                VALUES (%s, %s, 0, CURRENT_TIMESTAMP + CAST(%s AS INTERVAL), 0, %s)
+            ''', (user_id, temp_token, f"{days} days", plan_type))
+        else:
+            cursor.execute('''
+                INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned)
+                VALUES (%s, %s, 0, CURRENT_TIMESTAMP + CAST(%s AS INTERVAL), 0)
+            ''', (user_id, temp_token, f"{days} days"))
     conn.commit()
     cursor.close()
     conn.close()
