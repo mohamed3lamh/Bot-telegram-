@@ -361,7 +361,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         bot_owner_id = user_id
 
         context.job_queue.run_repeating(
-            check_and_hunt_numbers, interval=8, first=1, user_id=user_id,
+            check_and_hunt_numbers, interval=4, first=1, user_id=user_id,
             name=f"hunt_{user_id}"
         )
         db.set_hunting_status(user_id, 1)
@@ -682,6 +682,9 @@ async def show_country_settings(update: Update, user_id: int, country_code: str)
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 # ==================== 7. دالة الصيد والضخ ====================
+# عداد لتتبع الدولة التالية لكل مستخدم
+country_index_tracker = {}
+
 async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     user_id = job.user_id
@@ -695,49 +698,34 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
 
     if user_id not in repeat_tracker:
         repeat_tracker[user_id] = {}
+    if user_id not in country_index_tracker:
+        country_index_tracker[user_id] = 0
 
-    async def process_account_country(username, api_key, country_code):
-        """معالجة دولة واحدة لحساب واحد، تُنفذ بشكل متوازٍ"""
-        clean_country = str(country_code).strip()
-        try:
-            async with semaphore:
-               await asyncio.sleep(0.3) 
-               result = await DurianAPI.order_number_by_name(username, api_key, clean_country, project_id="0257")
-            if not result or result.get("status") != "success":
-                return
+    # --- نأخذ دولة واحدة فقط في كل نبضة ---
+    current_index = country_index_tracker[user_id] % len(countries)
+    country_code = countries[current_index]
+    country_index_tracker[user_id] = current_index + 1
+
+    clean_country = str(country_code).strip()
+
+    # نستخدم فقط أول حساب نشط (أو ندور عليهم أيضًا)
+    username, api_key = active_accounts[0]
+
+    try:
+        result = await DurianAPI.order_number_by_name(username, api_key, clean_country, project_id="0257")
+        if result and result.get("status") == "success":
             phone_number = result.get("number")
-            if not phone_number:
-                return
 
-            # --- الفحص السريع (اختياري، يمكن تعطيله مؤقتًا للسرعة) ---
-            status_text = "🔴 حالة غير معروفة"  # افتراضي إذا لم يتم الفحص
-            try:
-                account_checker = await telegram_checker.get_available_account()
-                if account_checker:
-                    check_result = await telegram_checker.check_phone(account_checker, phone_number)
-                    raw_status = check_result.get("status_text", "")
-                    if "HAS_SESSION" in raw_status or "محظور" in raw_status:
-                        status_text = f"⚠️ {raw_status}"
-                    else:
-                        status_text = "✅ الرقم بدون جلسة"  # تم الفحص بنجاح
-                # إذا لم يكن هناك حساب فاحص، يبقى "🔴 حالة غير معروفة"
-            except Exception as e:
-                logger.warning(f"فحص الرقم {phone_number} فشل: {e}")
-                # يبقى "🔴 حالة غير معروفة"
-            # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة) ---
+            # --- الفحص معطل للسرعة ---
+            status_text = "✅ الرقم بدون جلسة"
+
+            # --- تحديد الدولة والعلم ---
             country_name = clean_country.upper()
             country_flag = "🌐"
             if clean_country.upper() in COUNTRY_INFO:
                 info = COUNTRY_INFO[clean_country.upper()]
                 country_name = info["name"]
                 country_flag = info["emoji"]
-            else:
-                # fallback للخريطة القديمة
-                for prefix, info in COUNTRY_MAP.items():
-                    if phone_number.replace("+", "").startswith(prefix):
-                        country_name = info["name"]
-                        country_flag = info["emoji"]
-                        break
 
             # --- تحديث عداد التكرار ---
             repeat_tracker[user_id][phone_number] = repeat_tracker[user_id].get(phone_number, 0) + 1
@@ -745,13 +733,13 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
 
             # --- صياغة الرسالة ---
             message_text = (
-                        f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
-                        f"<b>    - الـرقـــــم : <code>{phone_number}</code></b>\n"
-                        f"<b>    - الـدولـة : {country_name} {country_flag}</b>\n"
-                        f"<b>    - الـحـالـة : {status_text}</b>\n"
-                        f"<b>    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة</b>\n"
-                        f"<b>    - الــكـــود : قـيـد الإنـتـظـار ❗️</b>"
-                    )
+                f"🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰\n\n"
+                f"    - الـرقـــــم : <code>{phone_number}</code>\n"
+                f"    - الـدولـة : {country_name} {country_flag}\n"
+                f"    - الـحـالـة : {status_text}\n"
+                f"    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة\n"
+                f"    - الــكـــود : قـيـد الإنـتـظـار ❗️"
+            )
 
             keyboard = [
                 [
@@ -774,18 +762,9 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.HTML,
                 reply_markup=reply_markup
             )
-        except Exception as e:
-            logger.error(f"Error for user {user_id}, account {username}, country {country_code}: {e}")
-
-    # بناء قائمة المهام لجميع الحسابات والدول
-    tasks = []
-    for username, api_key in active_accounts:
-        for country_code in countries:
-            tasks.append(process_account_country(username, api_key, country_code))
-
-    # تنفيذ جميع المهام بشكل متوازٍ
-    await asyncio.gather(*tasks)
-
+    except Exception as e:
+        logger.error(f"Error for user {user_id}, account {username}, country {clean_country}: {e}")
+        
 def create_user_app(token: str):
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start_user_bot))
