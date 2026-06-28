@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from telegram import Bot
-from telegram.error import InvalidToken, TelegramError
+from telegram.ext import Application
 from user_bot import create_user_app
 import database as db
 
@@ -9,43 +9,59 @@ logger = logging.getLogger(__name__)
 
 class BotManager:
     def __init__(self):
-        self.running_bots = {}
+        self.registry = {} # {token: {"app": Application, "lock": asyncio.Lock(), "state": "STOPPED"}}
 
-    async def validate_token(self, token):
-        try:
-            bot = Bot(token)
-            await bot.get_me()
-            return True
-        except Exception:
-            return False
+    def _ensure_token_entry(self, token):
+        if token not in self.registry:
+            self.registry[token] = {"app": None, "lock": asyncio.Lock(), "state": "STOPPED"}
 
     async def start_bot(self, user_id, token):
-        try:
-            app = create_user_app(token)
-            await app.initialize()
-            await app.start()
-            await app.updater.start_polling()
-            self.running_bots[user_id] = app
-            logger.info(f"🚀 تم تشغيل بوت المستخدم {user_id}")
-        except Exception as e:
-            logger.error(f"❌ فشل تشغيل بوت {user_id}: {e}")
+        self._ensure_token_entry(token)
+        async with self.registry[token]["lock"]:
+            if self.registry[token]["state"] == "RUNNING":
+                logger.info(f"ℹ️ البوت {token[:10]} يعمل بالفعل.")
+                return False
 
-    async def stop_bot(self, user_id):
-        if user_id in self.running_bots:
-            app = self.running_bots[user_id]
-            await app.updater.stop()
-            await app.stop()
-            await app.shutdown()
-            del self.running_bots[user_id]
-            logger.info(f"🛑 تم إيقاف بوت المستخدم {user_id}")
+            try:
+                self.registry[token]["state"] = "STARTING"
+                app = create_user_app(token)
+                await app.initialize()
+                await app.start()
+                await app.updater.start_polling()
+                
+                self.registry[token]["app"] = app
+                self.registry[token]["state"] = "RUNNING"
+                logger.info(f"🚀 تم تشغيل بوت المستخدم {user_id}")
+                return True
+            except Exception as e:
+                self.registry[token]["state"] = "STOPPED"
+                logger.error(f"❌ فشل تشغيل بوت {user_id}: {e}")
+                return False
+
+    async def stop_bot(self, token):
+        self._ensure_token_entry(token)
+        async with self.registry[token]["lock"]:
+            if self.registry[token]["state"] != "RUNNING":
+                return
+
+            try:
+                self.registry[token]["state"] = "STOPPING"
+                app = self.registry[token]["app"]
+                await app.updater.stop()
+                await app.stop()
+                await app.shutdown()
+                self.registry[token]["state"] = "STOPPED"
+                logger.info(f"🛑 تم إيقاف البوت {token[:10]}")
+            except Exception as e:
+                logger.error(f"❌ خطأ أثناء إيقاف البوت: {e}")
 
     async def restore_active_bots(self):
-        """استعادة كافة البوتات التي كانت تعمل قبل إعادة تشغيل السيرفر"""
+        """استعادة كافة البوتات النشطة بأمان"""
         try:
             active_bots = await db.get_all_active_bots()
             logger.info(f"جاري استعادة {len(active_bots)} من البوتات النشطة...")
             for user_id, token in active_bots:
-                # تشغيل كل بوت في مهمة مستقلة منفصلة
+                # تشغيل آمن
                 asyncio.create_task(self.start_bot(user_id, token))
         except Exception as e:
             logger.error(f"Error restoring bots: {e}")
