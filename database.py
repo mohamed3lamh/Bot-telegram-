@@ -348,8 +348,8 @@ def get_active_site_accounts(user_id):
         conn.close()
 
 # --- باقي الدوال (موجودة مسبقاً) ---
-def save_bot(user_id, token):
-    conn = get_connection()
+async def save_bot(user_id, token):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned) 
@@ -361,8 +361,8 @@ def save_bot(user_id, token):
     cursor.close()
     conn.close()
 
-def add_days_to_user(user_id, days, plan_type=None):
-    conn = get_connection()
+async def add_days_to_user(user_id, days, plan_type=None):
+    conn = await get_connection()
     cursor = conn.cursor()
     # هل يوجد سجل للمستخدم؟
     cursor.execute('SELECT token FROM user_bots WHERE user_id = %s', (user_id,))
@@ -399,9 +399,9 @@ def add_days_to_user(user_id, days, plan_type=None):
     cursor.close()
     conn.close()
 
-def get_user_plan(user_id):
+async def get_user_plan(user_id):
     """جلب نوع خطة المستخدم (1, 2, 3)"""
-    conn = get_connection()
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT plan_type FROM user_bots WHERE user_id = %s", (user_id,))
     row = cursor.fetchone()

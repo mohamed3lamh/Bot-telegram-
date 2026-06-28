@@ -168,7 +168,7 @@ async def show_settings(update: Update, user_id: int):
 async def show_manage_accounts(update: Update, user_id: int):
     try:
         accounts = db.get_all_site_accounts(user_id)
-        plan = db.get_user_plan(user_id)  # "1", "2", "3"
+        plan = await db.get_user_plan(user_id)  # "1", "2", "3"
         max_accounts = int(plan)
         if not accounts:
             text = "👤 **إدارة الحسابات:**\n\nلا توجد حسابات مضافة. أضف حسابًا للبدء."
