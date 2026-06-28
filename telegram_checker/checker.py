@@ -6,9 +6,10 @@ from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
     SessionPasswordNeededError, PhoneNumberInvalidError
 )
-from .telegram_client import telegram_client_manager
+from .telegram_client import TelegramClientManager, SessionUnauthorizedError
 from .account_manager import account_manager
 from .flood_manager import flood_manager
+
 
 logger = logging.getLogger(__name__)
 
