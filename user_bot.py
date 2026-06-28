@@ -484,24 +484,36 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         # لا نغير الصفحة، يبقى المستخدم في نفس قائمة الدول
         return
     elif data.startswith(("code_", "unban_", "cancel_", "rate_", "weak_")):
-        parts = data.split("_", 2)
-        if len(parts) < 3:
-            await safe_answer(query, "⚠️ هذه الأزرار القديمة غير مدعومة...", show_alert=True)
-            return
+        parts = data.split("_")
         action = parts[0]
-        username = parts[1]
-        phone = parts[2]
+        
+        # تحديد الصيغة (هل هي جزأين phone فقط، أم 3 أجزاء username_phone)
+        if len(parts) == 2:
+            phone = parts[1]
+            # في الفحص التلقائي، لا يتوفر username في البيانات، نستخدم أول حساب متاح للمستخدم
+            owner_id = bot_owner_id if bot_owner_id is not None else user_id
+            accounts = db.get_all_site_accounts(owner_id)
+            if not accounts:
+                await safe_answer(query, "❌ لا توجد حسابات فحص متاحة!", show_alert=True)
+                return
+            username = accounts[0][1]
+            api_key = accounts[0][2]
+        elif len(parts) >= 3:
+            username = parts[1]
+            phone = parts[2]
+            owner_id = bot_owner_id if bot_owner_id is not None else user_id
+            accounts = db.get_all_site_accounts(owner_id)
+            api_key = None
+            for acc_id, acc_username, acc_api_key, _ in accounts:
+                if acc_username == username:
+                    api_key = acc_api_key
+                    break
+        else:
+            await safe_answer(query, "⚠️ صيغة الزر غير مدعومة...", show_alert=True)
+            return
 
-        # استخدام مالك البوت للبحث عن الحساب
-        owner_id = bot_owner_id if bot_owner_id is not None else user_id
-        accounts = db.get_all_site_accounts(owner_id)
-        api_key = None
-        for acc_id, acc_username, acc_api_key, _ in accounts:
-            if acc_username == username:
-                api_key = acc_api_key
-                break
         if not api_key:
-            await safe_answer(query, "❌ الحساب المرتبط بهذا الرقم غير موجود!", show_alert=True)
+            await safe_answer(query, "❌ الحساب المرتبط غير موجود!", show_alert=True)
             return
 
         if action == "code":
