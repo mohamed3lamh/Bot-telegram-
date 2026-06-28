@@ -263,10 +263,3 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     channel = await db.get_hunting_channel(user_id)
     countries = await db.get_user_countries(user_id)
     # ... (باقي المنطق مع await)
-
-def create_user_app(token: str):
-    app = Application.builder().token(token).build()
-    app.add_handler(CommandHandler("start", start_user_bot))
-    app.add_handler(CallbackQueryHandler(user_bot_callback_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_inputs))
-    return app
