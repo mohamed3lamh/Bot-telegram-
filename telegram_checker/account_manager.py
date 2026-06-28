@@ -1,4 +1,4 @@
-from database import get_connection
+import database as db
 from datetime import datetime, timezone
 
 class AccountManager:
@@ -7,7 +7,7 @@ class AccountManager:
 
     async def get_all_accounts(self):
         """ جلب جميع حسابات تيليجرام المفعلة. """
-        conn = get_connection()
+        conn = await db.get_connection()
         cur = conn.cursor()
         cur.execute("""
             SELECT id, api_id, api_hash, string_session, is_active, flood_until
@@ -65,7 +65,7 @@ class AccountManager:
 
     async def disable_account(self, account_id):
         """ تعطيل الحساب. """
-        conn = get_connection()
+        conn = await db.get_connection()
         cur = conn.cursor()
         cur.execute("""
             UPDATE telegram_accounts SET is_active = FALSE WHERE id=%s
@@ -76,7 +76,7 @@ class AccountManager:
 
     async def enable_account(self, account_id):
         """ إعادة تفعيل الحساب. """
-        conn = get_connection()
+        conn = await db.get_connection()
         cur = conn.cursor()
         cur.execute("""
             UPDATE telegram_accounts SET is_active = TRUE WHERE id=%s
