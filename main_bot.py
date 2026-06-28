@@ -41,7 +41,7 @@ def get_correct_table_name():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name
-    db_data = db.get_bot(user_id)
+    db_data = await db.get_bot(user_id)
     if db_data and len(db_data) >= 4:
         if db_data[3] == 1:
             await update.message.reply_text("❌ عذراً، تم إيقاف حسابك وحظرك من استخدام المنصة من قبل الإدارة.")
@@ -166,7 +166,7 @@ async def show_dashboard(update: Update, user_id: int, user_name: str):
     days_left = "36 يوم"
     status = "⚪️ غير مربوط"
     try:
-        db_data = db.get_bot(user_id)
+        db_data = await db.get_bot(user_id)
         if db_data and len(db_data) >= 4:
             status = bot_manager.get_status(user_id)
             expires_at = db_data[2]
@@ -442,14 +442,14 @@ async def toggle_checker_callback(update: Update, context: ContextTypes.DEFAULT_
     except ValueError:
         await query.answer("خطأ في البيانات", show_alert=True)
         return
-    accounts = db.get_all_checkers()
+    accounts = await db.get_all_checkers()
     acc = next((a for a in accounts if a[0] == acc_id), None)
     if not acc:
         await query.message.reply_text("❌ الحساب غير موجود.")
         return
     phone = acc[1]
     old_status = acc[2]
-    db.toggle_checker(acc_id)
+    await db.toggle_checker(acc_id)
     new_status = not old_status
     status_text = "تفعيل" if new_status else "تعطيل"
     await query.message.reply_text(f"✅ تم {status_text} الحساب `{phone}` بنجاح.")
@@ -586,7 +586,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "adm_get_ids":
             try:
                 table_name = get_correct_table_name()
-                conn = db.get_connection()
+                conn = await db.get_connection()
                 cursor = conn.cursor()
                 cursor.execute(f"SELECT user_id FROM {table_name}")
                 rows = cursor.fetchall()
@@ -637,7 +637,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer("غير مصرح", show_alert=True)
                 return
             target_id = int(query.data.split("_")[2])
-            pending = db.get_pending_subscription(target_id)
+            pending = await db.get_pending_subscription(target_id)
             if not pending:
                 await query.answer("لا يوجد طلب معلق.", show_alert=True)
                 return
@@ -650,11 +650,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 plan_num = "1"
 
-            db.add_days_to_user(target_id, 30, plan_type=plan_num)
-            db.log_activity(target_id, "تفعيل اشتراك", f"خطة {plan} - 30 يوم")
-            db.log_activity(ADMIN_ID, "تأكيد دفع", f"مستخدم {target_id} - خطة {plan}")
-            db.delete_pending_subscription(target_id)
-            new_data = db.get_bot(target_id)
+            await db.add_days_to_user(target_id, 30, plan_type=plan_num)
+            await db.log_activity(target_id, "تفعيل اشتراك", f"خطة {plan} - 30 يوم")
+            await db.log_activity(ADMIN_ID, "تأكيد دفع", f"مستخدم {target_id} - خطة {plan}")
+            await db.delete_pending_subscription(target_id)
+            new_data = await db.get_bot(target_id)
             if new_data:
                 expires_at = new_data[2]
                 if isinstance(expires_at, str):
@@ -706,11 +706,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         method = method.upper()
 
         # --- جلب الأسعار والمحافظ من الإعدادات الديناميكية ---
-        plan_price = float(db.get_setting(f'plan_price_{plan_num}', '0'))
-        usdt_rate = float(db.get_setting('usdt_rate', '1'))
-        trx_rate = float(db.get_setting('trx_rate', '0.16'))
-        usdt_wallet = db.get_setting('usdt_wallet', 'TYourUSDTAddressHere')
-        trx_wallet = db.get_setting('trx_wallet', 'TSDqje1oWAcDY8Q5XzUDLWksWMSPqxv3PB')
+        plan_price = float(await db.get_setting(f'plan_price_{plan_num}', '0'))
+        usdt_rate = float(await db.get_setting('usdt_rate', '1'))
+        trx_rate = float(await db.get_setting('trx_rate', '0.16'))
+        usdt_wallet = await db.get_setting('usdt_wallet', 'TYourUSDTAddressHere')
+        trx_wallet = await db.get_setting('trx_wallet', 'TSDqje1oWAcDY8Q5XzUDLWksWMSPqxv3PB')
 
         # حساب المبلغ بالعملة الرقمية بناءً على سعر الصرف
         if method == "USDT":
@@ -724,7 +724,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         plan_name = "حساب واحد" if plan_num == "1" else "حسابين" if plan_num == "2" else "3 حسابات"
 
-        db.add_pending_subscription(user_id, plan_name, currency, amount, wallet)
+        await db.add_pending_subscription(user_id, plan_name, currency, amount, wallet)
 
         # إرسال إشعار للإدارة
         admin_msg = (
@@ -754,7 +754,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_dashboard(update, user_id, user_name)
         return
 
-    db_data = db.get_bot(user_id)
+    db_data = await db.get_bot(user_id)
     token = db_data[0] if (db_data and len(db_data) > 0) else None
 
     if query.data == "show_token_info":
