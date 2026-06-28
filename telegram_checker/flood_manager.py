@@ -7,7 +7,7 @@ class FloodManager:
         """
         التحقق من حالة الحظر المؤقت (FloodWait).
         """
-        flood_until = get_account_flood(account_id)
+        flood_until = database.get_account_flood(account_id)
         if not flood_until:
             return False
         return datetime.now(timezone.utc) < flood_until
@@ -19,7 +19,7 @@ class FloodManager:
 
         flood_until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
 
-        set_account_flood(
+        database.set_account_flood(
             account_id,
             flood_until
         )
@@ -29,7 +29,7 @@ class FloodManager:
         زيادة عداد الفحص.
         """
 
-        increase_account_checks(account_id)
+        database.increase_account_checks(account_id)
 
     async def account_ok(self, account_id):
         """
