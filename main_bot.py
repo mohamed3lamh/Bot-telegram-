@@ -775,7 +775,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("⚠️ يرجى إرسال توكن البوت أولاً لربطه.")
         else:
             # جلب عدد الحسابات النشطة لمعرفة نوع البوت
-            active_accounts = db.get_active_site_accounts(user_id)
+            active_accounts = await db.get_active_site_accounts(user_id)
             num_accounts = len(active_accounts) if active_accounts else 0
             if num_accounts == 1:
                 bot_type = "حساب واحد"
