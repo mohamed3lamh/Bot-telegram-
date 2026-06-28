@@ -1,5 +1,5 @@
+import database as db
 from datetime import datetime, timedelta, timezone
-import database
 
 class FloodManager:
 
@@ -7,7 +7,7 @@ class FloodManager:
         """
         التحقق من حالة الحظر المؤقت (FloodWait).
         """
-        flood_until = database.get_account_flood(account_id)
+        flood_until = await db.get_account_flood(account_id)
         if not flood_until:
             return False
         return datetime.now(timezone.utc) < flood_until
@@ -19,7 +19,7 @@ class FloodManager:
 
         flood_until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
 
-        database.set_account_flood(
+        await db.set_account_flood(
             account_id,
             flood_until
         )
@@ -29,7 +29,8 @@ class FloodManager:
         زيادة عداد الفحص.
         """
 
-        database.increase_account_checks(account_id)
+        await db.increase_account_checks(account_id)
+
 
     async def account_ok(self, account_id):
         """

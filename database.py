@@ -249,12 +249,12 @@ async def init_db():
     conn.close()
 
 # --- دوال حسابات DurianRCS (متعددة) ---
-def save_site_account_v2(user_id, username, api_key):
-    conn = get_connection()
+async def save_site_account_v2(user_id, username, api_key):
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         # حد الحسابات بناءً على الخطة
-        plan = get_user_plan(user_id)
+        plan = await get_user_plan(user_id)
         max_accounts = int(plan)
         cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s", (user_id,))
         count = cursor.fetchone()[0]
@@ -270,8 +270,8 @@ def save_site_account_v2(user_id, username, api_key):
         cursor.close()
         conn.close()
 
-def get_all_site_accounts(user_id):
-    conn = get_connection()
+async def get_all_site_accounts(user_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT id, username, api_key, is_active FROM user_site_accounts WHERE user_id = %s ORDER BY id", (user_id,))
@@ -281,8 +281,8 @@ def get_all_site_accounts(user_id):
         cursor.close()
         conn.close()
 
-def toggle_site_account(user_id, account_id):
-    conn = get_connection()
+async def toggle_site_account(user_id, account_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT is_active FROM user_site_accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
@@ -291,7 +291,7 @@ def toggle_site_account(user_id, account_id):
             return
         current_status = row[0]
         if not current_status:  # سيُفعّل الآن
-            plan = get_user_plan(user_id)
+            plan = await get_user_plan(user_id)
             max_active = int(plan)
             cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
             active_count = cursor.fetchone()[0]
@@ -307,8 +307,8 @@ def toggle_site_account(user_id, account_id):
         cursor.close()
         conn.close()
 
-def delete_site_account(user_id, account_id):
-    conn = get_connection()
+async def delete_site_account(user_id, account_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute("DELETE FROM user_site_accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
@@ -320,9 +320,9 @@ def delete_site_account(user_id, account_id):
         cursor.close()
         conn.close()
 
-def get_site_account(user_id):
+async def get_site_account(user_id):
     """الحساب النشط فقط"""
-    conn = get_connection()
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT username, api_key FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE LIMIT 1", (user_id,))
@@ -332,9 +332,9 @@ def get_site_account(user_id):
         cursor.close()
         conn.close()
 
-def get_active_site_accounts(user_id):
+async def get_active_site_accounts(user_id):
     """استرجاع جميع حسابات الموقع النشطة للمستخدم"""
-    conn = get_connection()
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(
@@ -409,68 +409,59 @@ async def get_user_plan(user_id):
     conn.close()
     return row[0] if row else '1'
 
-def ban_user(user_id, status):
-    conn = get_connection()
+async def ban_user(user_id, status):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute('UPDATE user_bots SET is_banned = %s WHERE user_id = %s', (status, user_id))
     conn.commit()
     cursor.close()
     conn.close()
 
-def set_status(user_id, is_active):
-    conn = get_connection()
+async def set_status(user_id, is_active):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute('UPDATE user_bots SET is_active = %s WHERE user_id = %s', (is_active, user_id))
     conn.commit()
     cursor.close()
     conn.close()
 
-def get_bot(user_id):
-    conn = get_connection()
+async def get_bot(user_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT token, is_active, expires_at, is_banned FROM user_bots WHERE user_id = %s', (user_id,))
         row = cursor.fetchone()
-        cursor.close()
-        conn.close()
         return row
-    except Exception:
+    finally:
         cursor.close()
         conn.close()
-        return None
 
-def get_all_active_bots():
-    conn = get_connection()
+async def get_all_active_bots():
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT user_id, token FROM user_bots WHERE is_active = 1 AND is_banned = 0')
         rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
         return rows
-    except Exception:
+    finally:
         cursor.close()
         conn.close()
-        return []
 
-def get_stats():
-    conn = get_connection()
+async def get_stats():
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT COUNT(*) FROM user_bots')
         total = cursor.fetchone()[0]
         cursor.execute('SELECT COUNT(*) FROM user_bots WHERE is_active = 1')
         active = cursor.fetchone()[0]
-        cursor.close()
-        conn.close()
         return total if total else 0, active if active else 0
-    except Exception:
+    finally:
         cursor.close()
         conn.close()
-        return 0, 0
 
-def save_hunting_channel(user_id, channel_id):
-    conn = get_connection()
+async def save_hunting_channel(user_id, channel_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO user_hunting_channels (user_id, channel_id)
@@ -482,8 +473,8 @@ def save_hunting_channel(user_id, channel_id):
     cursor.close()
     conn.close()
 
-def get_hunting_channel(user_id):
-    conn = get_connection()
+async def get_hunting_channel(user_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(
@@ -496,9 +487,9 @@ def get_hunting_channel(user_id):
         cursor.close()
         conn.close()
 
-def set_hunting_status(user_id, is_hunting):
+async def set_hunting_status(user_id, is_hunting):
     status_val = 1 if is_hunting else 0
-    conn = get_connection()
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO user_hunting_status (user_id, is_hunting)
@@ -509,8 +500,8 @@ def set_hunting_status(user_id, is_hunting):
     cursor.close()
     conn.close()
 
-def get_user_countries(user_id):
-    conn = get_connection()
+async def get_user_countries(user_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT country_name FROM user_countries WHERE user_id = %s', (user_id,))
@@ -520,8 +511,8 @@ def get_user_countries(user_id):
         cursor.close()
         conn.close()
 
-def add_user_country(user_id, country_name):
-    conn = get_connection()
+async def add_user_country(user_id, country_name):
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute('''
@@ -534,8 +525,8 @@ def add_user_country(user_id, country_name):
         cursor.close()
         conn.close()
 
-def delete_user_country(user_id, country_name):
-    conn = get_connection()
+async def delete_user_country(user_id, country_name):
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute("DELETE FROM user_countries WHERE user_id = %s AND country_name = %s", (user_id, country_name))
@@ -545,8 +536,8 @@ def delete_user_country(user_id, country_name):
         conn.close()
 
 # ---------- نظام الاشتراكات المعلقة ----------
-def add_pending_subscription(user_id, plan, payment_method, amount_crypto, wallet_address):
-    conn = get_connection()
+async def add_pending_subscription(user_id, plan, payment_method, amount_crypto, wallet_address):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO pending_subscriptions (user_id, plan, payment_method, amount_crypto, wallet_address)
@@ -562,8 +553,8 @@ def add_pending_subscription(user_id, plan, payment_method, amount_crypto, walle
     cursor.close()
     conn.close()
 
-def get_pending_subscription(user_id):
-    conn = get_connection()
+async def get_pending_subscription(user_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT plan, payment_method, amount_crypto, wallet_address, created_at FROM pending_subscriptions WHERE user_id = %s", (user_id,))
     row = cursor.fetchone()
@@ -571,16 +562,16 @@ def get_pending_subscription(user_id):
     conn.close()
     return row
 
-def delete_pending_subscription(user_id):
-    conn = get_connection()
+async def delete_pending_subscription(user_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM pending_subscriptions WHERE user_id = %s", (user_id,))
     conn.commit()
     cursor.close()
     conn.close()
 
-def get_all_pending_subscriptions():
-    conn = get_connection()
+async def get_all_pending_subscriptions():
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT user_id, plan, payment_method, amount_crypto, wallet_address, created_at FROM pending_subscriptions ORDER BY created_at DESC")
     rows = cursor.fetchall()
@@ -588,8 +579,8 @@ def get_all_pending_subscriptions():
     conn.close()
     return rows
 
-def get_all_checkers():
-    conn = get_connection()
+async def get_all_checkers():
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id, phone, is_active FROM telegram_accounts ORDER BY id")
     rows = cursor.fetchall()
@@ -597,25 +588,25 @@ def get_all_checkers():
     conn.close()
     return rows
 
-def delete_checker(account_id):
+async def delete_checker(account_id):
     """حذف حساب فاحص نهائيًا من قاعدة البيانات"""
-    conn = get_connection()
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM telegram_accounts WHERE id = %s", (account_id,))
     conn.commit()
     cursor.close()
     conn.close()
 
-def toggle_checker(account_id):
-    conn = get_connection()
+async def toggle_checker(account_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE telegram_accounts SET is_active = NOT is_active WHERE id = %s", (account_id,))
     conn.commit()
     cursor.close()
     conn.close()
 
-def get_account_flood(account_id):
-    conn = get_connection()
+async def get_account_flood(account_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT flood_until FROM telegram_accounts WHERE id=%s", (account_id,))
@@ -625,8 +616,8 @@ def get_account_flood(account_id):
         cursor.close()
         conn.close()
 
-def save_telegram_account(phone, api_id, api_hash, string_session):
-    conn = get_connection()
+async def save_telegram_account(phone, api_id, api_hash, string_session):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO telegram_accounts (phone, api_id, api_hash, string_session)
@@ -641,8 +632,8 @@ def save_telegram_account(phone, api_id, api_hash, string_session):
     cursor.close()
     conn.close()
 
-def get_telegram_accounts():
-    conn = get_connection()
+async def get_telegram_accounts():
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, phone, api_id, api_hash, string_session, is_active,
@@ -655,24 +646,24 @@ def get_telegram_accounts():
     conn.close()
     return rows
 
-def delete_telegram_account(account_id):
-    conn = get_connection()
+async def delete_telegram_account(account_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM telegram_accounts WHERE id=%s", (account_id,))
     conn.commit()
     cursor.close()
     conn.close()
 
-def set_account_flood(account_id, flood_until):
-    conn = get_connection()
+async def set_account_flood(account_id, flood_until):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE telegram_accounts SET flood_until=%s WHERE id=%s", (flood_until, account_id))
     conn.commit()
     cursor.close()
     conn.close()
 
-def increase_account_checks(account_id):
-    conn = get_connection()
+async def increase_account_checks(account_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("""
         UPDATE telegram_accounts SET
@@ -684,8 +675,8 @@ def increase_account_checks(account_id):
     cursor.close()
     conn.close()
 
-def get_best_telegram_account():
-    conn = get_connection()
+async def get_best_telegram_account():
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, phone, api_id, api_hash, string_session
@@ -701,8 +692,8 @@ def get_best_telegram_account():
     return row
 
 # ---------- سجل العمليات ----------
-def log_activity(user_id, action, details=""):
-    conn = get_connection()
+async def log_activity(user_id, action, details=""):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("INSERT INTO activity_log (user_id, action, details) VALUES (%s, %s, %s)",
                    (user_id, action, details))
@@ -710,8 +701,8 @@ def log_activity(user_id, action, details=""):
     cursor.close()
     conn.close()
 
-def get_recent_activities(limit=50):
-    conn = get_connection()
+async def get_recent_activities(limit=50):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id, user_id, action, details, created_at FROM activity_log ORDER BY created_at DESC LIMIT %s", (limit,))
     rows = cursor.fetchall()
@@ -720,8 +711,8 @@ def get_recent_activities(limit=50):
     return rows
 
 # ---------- تذاكر الدعم ----------
-def create_ticket(user_id, subject, message):
-    conn = get_connection()
+async def create_ticket(user_id, subject, message):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("INSERT INTO support_tickets (user_id, subject, message) VALUES (%s, %s, %s)",
                    (user_id, subject, message))
@@ -729,8 +720,8 @@ def create_ticket(user_id, subject, message):
     cursor.close()
     conn.close()
 
-def get_open_tickets():
-    conn = get_connection()
+async def get_open_tickets():
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id, user_id, subject, message, status, admin_reply, created_at FROM support_tickets WHERE status='open' ORDER BY created_at DESC")
     rows = cursor.fetchall()
@@ -738,8 +729,8 @@ def get_open_tickets():
     conn.close()
     return rows
 
-def get_all_tickets():
-    conn = get_connection()
+async def get_all_tickets():
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id, user_id, subject, message, status, admin_reply, created_at FROM support_tickets ORDER BY created_at DESC")
     rows = cursor.fetchall()
@@ -747,8 +738,8 @@ def get_all_tickets():
     conn.close()
     return rows
 
-def reply_ticket(ticket_id, reply_text):
-    conn = get_connection()
+async def reply_ticket(ticket_id, reply_text):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE support_tickets SET admin_reply = %s, status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                    (reply_text, ticket_id))
@@ -756,8 +747,8 @@ def reply_ticket(ticket_id, reply_text):
     cursor.close()
     conn.close()
 
-def close_ticket(ticket_id):
-    conn = get_connection()
+async def close_ticket(ticket_id):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE support_tickets SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = %s", (ticket_id,))
     conn.commit()
@@ -765,8 +756,8 @@ def close_ticket(ticket_id):
     conn.close()
 
 # ---------- الإعدادات ----------
-def get_setting(key, default=None):
-    conn = get_connection()
+async def get_setting(key, default=None):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM settings WHERE key = %s", (key,))
     row = cursor.fetchone()
@@ -776,8 +767,8 @@ def get_setting(key, default=None):
         return row[0]
     return default
 
-def set_setting(key, value):
-    conn = get_connection()
+async def set_setting(key, value):
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO settings (key, value) VALUES (%s, %s)
@@ -787,8 +778,8 @@ def set_setting(key, value):
     cursor.close()
     conn.close()
 
-def get_all_settings():
-    conn = get_connection()
+async def get_all_settings():
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT key, value FROM settings ORDER BY key")
     rows = cursor.fetchall()
@@ -796,9 +787,9 @@ def get_all_settings():
     conn.close()
     return rows
 
-def update_country_settings(user_id, country_code, number_type=None, session_status=None):
+async def update_country_settings(user_id, country_code, number_type=None, session_status=None):
     """تحديث إعدادات دولة معينة"""
-    conn = get_connection()
+    conn = await get_connection()
     cursor = conn.cursor()
     if number_type is not None:
         cursor.execute("UPDATE user_countries SET number_type = %s WHERE user_id = %s AND country_name = %s",
@@ -810,9 +801,9 @@ def update_country_settings(user_id, country_code, number_type=None, session_sta
     cursor.close()
     conn.close()
 
-def get_country_settings(user_id, country_code):
+async def get_country_settings(user_id, country_code):
     """جلب إعدادات دولة معينة"""
-    conn = get_connection()
+    conn = await get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT number_type, session_status FROM user_countries WHERE user_id = %s AND country_name = %s",
                    (user_id, country_code))

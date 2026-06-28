@@ -70,7 +70,7 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ التوكن غير صالح! تأكد من الحصول عليه بشكل صحيح من @BotFather.")
             return
         try:
-            db.save_bot(user_id, text)
+            await db.save_bot(user_id, text)
             await update.message.reply_text(
                 f"✅ تم تحديث توكن البوت بنجاح\n\n"
                 f"🔑 التوكن: <code>{text}</code>",
@@ -109,7 +109,7 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 target_id, value = text.split(" ")
                 target_id = int(target_id)
-                db.add_days_to_user(target_id, int(value))
+                await db.add_days_to_user(target_id, int(value))
                 db.log_activity(user_id, "إضافة أيام", f"للمستخدم {target_id} - {value} يوم")
                 await update.message.reply_text(f"✅ تم إضافة {value} يوم للمستخدم `{target_id}` بنجاح.")
             except Exception:
@@ -154,7 +154,7 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text("❌ التوكن غير صالح! تأكد من الحصول عليه بشكل صحيح من @BotFather.")
         return
     try:
-        db.save_bot(user_id, text)
+        await db.save_bot(user_id, text)
         await status_msg.delete()
         await update.message.reply_text("✅ تم شحن وتحديث توكن البوت الجديد بنجاح!")
     except Exception as e:
