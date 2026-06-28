@@ -822,7 +822,7 @@ async def safe_restore():
 
 async def main():
     try:
-        db.init_db()
+        await db.init_db()
     except Exception as e:
         logger.error(f"Database init error: {e}")
 

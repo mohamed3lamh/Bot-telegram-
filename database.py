@@ -1,5 +1,5 @@
 import os
-import time
+import asyncio
 import logging
 import pg8000
 from urllib.parse import urlparse
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-def get_connection():
+async def get_connection():
     if not DATABASE_URL:
         logger.error("DATABASE_URL missing in environment variables!")
         raise ValueError("DATABASE_URL is not set")
@@ -36,10 +36,10 @@ def get_connection():
                 logger.error(f"❌ فشلت كافة محاولات الاتصال بقاعدة البيانات: {e}")
                 raise e
             logger.warning(f"🔄 محاولة الاتصال بقاعدة البيانات فشلت ({attempt + 1}/5)، جاري إعادة المحاولة خلال ثانيتين...")
-            time.sleep(2)
+            await asyncio.sleep(2)
 
-def init_db():
-    conn = get_connection()
+async def init_db():
+    conn = await get_connection()
     cursor = conn.cursor()
 
     # تعريف دالة column_exists قبل استخدامها
