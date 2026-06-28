@@ -135,11 +135,11 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await bot_manager.stop_bot(target_id)
                 except Exception:
                     pass
-                conn = db.get_connection()
+                conn = await db.get_connection()
                 cursor = conn.cursor()
                 cursor.execute(f"DELETE FROM {table_name} WHERE user_id = %s", (target_id,))
                 conn.commit()
-                db.log_activity(user_id, "حذف مستخدم", f"المستخدم {target_id}")
+                await db.log_activity(user_id, "حذف مستخدم", f"المستخدم {target_id}")
                 cursor.close()
                 conn.close()
                 await update.message.reply_text(f"🗑️ تم حذف المستخدم `{target_id}` نهائياً من الجدول `{table_name}` وإيقاف خط السحب الخاص به.")
@@ -215,7 +215,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_admin_panel(update: Update):
     try:
-        total, active = db.get_stats()
+        total, active = await db.get_stats()
     except Exception:
         total, active = 0, 0
 
@@ -264,7 +264,7 @@ async def show_user_management(update: Update, page=0):
     per_page = 10
     offset = page * per_page
     try:
-        conn = db.get_connection()
+        conn = await db.get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT user_id, token, is_active, expires_at, is_banned FROM user_bots ORDER BY user_id LIMIT %s OFFSET %s", (per_page, offset))
         rows = cursor.fetchall()
@@ -297,7 +297,7 @@ async def show_user_management(update: Update, page=0):
         if page > 0:
             nav_row.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"user_page_{page-1}"))
         # بفرض وجود المزيد (فحص بسيط)
-        conn = db.get_connection()
+        conn = await db.get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM user_bots")
         total = cursor.fetchone()[0]
@@ -314,7 +314,7 @@ async def show_user_management(update: Update, page=0):
 
 async def show_user_detail(update: Update, user_id: int):
     query = update.callback_query
-    data = db.get_bot(user_id)
+    data = await db.get_bot(user_id)
     if not data:
         await query.answer("المستخدم غير موجود", show_alert=True)
         return
@@ -349,7 +349,7 @@ async def show_user_detail(update: Update, user_id: int):
 # ---------- سجل العمليات ----------
 async def show_activity_log(update: Update):
     query = update.callback_query
-    activities = db.get_recent_activities(30)
+    activities = await db.get_recent_activities(30)
     if not activities:
         text = "لا توجد عمليات مسجلة حتى الآن."
     else:
@@ -365,7 +365,7 @@ async def show_activity_log(update: Update):
 # ---------- تذاكر الدعم ----------
 async def show_tickets(update: Update):
     query = update.callback_query
-    tickets = db.get_open_tickets()
+    tickets = await db.get_open_tickets()
     if not tickets:
         text = "🎫 لا توجد تذاكر مفتوحة."
         keyboard = [[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="admin_panel")]]
@@ -396,7 +396,7 @@ async def handle_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ---------- إعدادات الأسعار والمحافظ ----------
 async def show_settings(update: Update):
     query = update.callback_query
-    settings = db.get_all_settings()
+    settings = await db.get_all_settings()
     text = "⚙️ **الإعدادات الحالية:**\n\n"
     keyboard = []
     for k, v in settings:
@@ -412,7 +412,7 @@ async def prompt_edit_setting(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["admin_action"] = "edit_setting"
 # ---------- دوال إدارة الحسابات الفاحصة ----------
 async def show_checker_management(update: Update):
-    accounts = db.get_all_checkers()
+    accounts = await db.get_all_checkers()
     if not accounts:
         text = "❌ لا توجد حسابات فحص مضافة بعد."
         keyboard = [[InlineKeyboardButton("🔙 العودة للوحة الإدارة", callback_data="admin_panel")]]

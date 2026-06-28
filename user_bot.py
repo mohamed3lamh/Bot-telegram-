@@ -147,7 +147,7 @@ async def start_user_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== 2. قائمة الإعدادات ====================
 async def show_settings(update: Update, user_id: int):
-    channel = db.get_hunting_channel(user_id)
+    channel = await db.get_hunting_channel(user_id)
     channel_status = f"✅ مربوطة ({channel})" if channel else "❌ غير مضافة"
     text = (
         f"⚙️ **قائمة الإعدادات:**\n\n"
@@ -697,9 +697,9 @@ async def show_country_settings(update: Update, user_id: int, country_code: str)
 async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     user_id = job.user_id
-    active_accounts = db.get_active_site_accounts(user_id)
-    channel = db.get_hunting_channel(user_id)
-    countries = db.get_user_countries(user_id)
+    active_accounts = await db.get_active_site_accounts(user_id)
+    channel = await db.get_hunting_channel(user_id)
+    countries = await db.get_user_countries(user_id)
 
     if not active_accounts or not channel or not countries:
         job.schedule_removal()
