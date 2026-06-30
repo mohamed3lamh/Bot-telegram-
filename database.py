@@ -245,21 +245,6 @@ def init_db():
     """)
     conn.commit()
 
-     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pending_reports (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            username VARCHAR(255) NOT NULL,
-            phone_number VARCHAR(50) NOT NULL,
-            country_code VARCHAR(20) NOT NULL,
-            status_text TEXT NOT NULL,
-            status_type VARCHAR(50) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            is_sent BOOLEAN DEFAULT FALSE
-        )
-    """)
-
-    conn.commit()
     cursor.close()
     conn.close()
 
