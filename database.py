@@ -248,6 +248,8 @@ def init_db():
     cursor.close()
     conn.close()
 
+init_reports_table()
+
 # --- دوال حسابات DurianRCS (متعددة) ---
 def save_site_account_v2(user_id, username, api_key):
     conn = get_connection()
@@ -822,3 +824,62 @@ def get_country_settings(user_id, country_code):
     if row:
         return {"number_type": row[0] or "all", "session_status": row[1] or "all"}
     return {"number_type": "all", "session_status": "all"}
+
+def init_reports_table():
+    """إنشاء الجدول الوسيط لحفظ نتائج الفحص والصيد برقم فريد"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pending_reports (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            username VARCHAR(255) NOT NULL,
+            phone_number VARCHAR(50) NOT NULL,
+            country_code VARCHAR(20) NOT NULL,
+            status_text TEXT NOT NULL,
+            status_type VARCHAR(50) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_sent BOOLEAN DEFAULT FALSE
+        )
+    """)
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def insert_pending_report(user_id, username, phone_number, country_code, status_text, status_type):
+    """يقوم محرك الصيد الخلفي بحفظ الرقم المصيد هنا بعد فحص التلغرام تلقائياً"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO pending_reports (user_id, username, phone_number, country_code, status_text, status_type)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (user_id, username, phone_number, country_code, status_text, status_type))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def get_unsent_reports_for_user(user_id):
+    """يقوم بوت المشترك الفرعي بجلب التقارير التي لم تُرسل بعد لقناته"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, username, phone_number, country_code, status_text, status_type 
+        FROM pending_reports 
+        WHERE user_id = %s AND is_sent = FALSE
+        ORDER BY id ASC
+    """, (user_id,))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
+def mark_report_as_sent(report_id):
+    """تحديث حالة التقرير إلى تم الإرسال لمنع التكرار"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE pending_reports SET is_sent = TRUE WHERE id = %s
+    """, (report_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
