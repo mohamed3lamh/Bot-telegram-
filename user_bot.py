@@ -716,14 +716,15 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
         for report in unsent_reports:
             report_id, phone_number, country_code, status_text, status_type = report
 
-            # --- جلب كود حساب الـ Durian المرتبط بالرقم من تفاصيل قاعدة البيانات لإرساله مع الأزرار ---
-            # الحفاظ على مصفوفة أزرارك المعتمدة على الـ username القديم
-            conn = db.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT username FROM durian_accounts WHERE user_id = %s AND is_active = TRUE LIMIT 1", (user_id,))
-            user_row = cursor.fetchone()
-            cursor.close()
-            conn.close()
+            # --- جلب كود حساب الـ Durian المرتبط بالرقم باستخدام الاسم الصحيح للجدول في مشروعك ---
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT username FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE LIMIT 1", (user_id,))
+        user_row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+
             
             username = user_row[0] if user_row else "user"
 
