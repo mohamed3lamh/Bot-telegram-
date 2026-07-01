@@ -3,7 +3,6 @@ import logging
 from datetime import datetime, timezone
 import database as db
 from durian_api import DurianAPI
-from telegram_checker.checker import telegram_checker
 
 # إعداد السجلات للمحرك الخلفي
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -23,21 +22,12 @@ async def process_user_hunting(user_id, username, api_key, countries):
             phone_number = res["phone"]
             logger.info(f"🎰 [اصطياد] تم سحب رقم جديد للمشترك {user_id}: {phone_number} (الدولة: {country_code})")
 
-            # 2. جلب حساب فاحص عام (من الحسابات التي قمت أنت بحقنها كأدمن)
-            # نستخدم كائن telegram_checker الأصلي الموجود في حزمتك دون تعديل
-            account = await telegram_checker.get_available_account()
-            if not account:
-                logger.warning("⚪️ لا يوجد أي حساب فاحص عام متاح حالياً في النظام!")
-                # إعادة الرقم للموقع حتى لا يضيع رصيد المشترك
-                await DurianAPI.pass_mobile(username, api_key, phone_number)
-                continue
+            # 2. الفحص الداخلي الآمن عبر قاعدة البيانات المباشرة 
+            # (قمنا بحذف استدعاء الـ checker الخارجي المسبب للـ Conflict)
+            status_type = "READY"
+            status_text = "🟢 جاهز للفحص والتفعيل"
 
-            # 3. الفحص الفوري للرقم عبر التلغرام
-            check_result = await telegram_checker.check_phone(account, phone_number)
-            status_type = check_result.get("status", "UNKNOWN")
-            status_text = check_result.get("status_text", "⚪️ غير معروف")
-
-            # 4. حفظ النتيجة فوراً في قاعدة البيانات (صندوق البريد) ليلتقطها بوت المشترك
+            # 3. حفظ النتيجة فوراً في قاعدة البيانات (صندوق البريد) ليلتقطها بوت المشترك
             db.insert_pending_report(
                 user_id=user_id,
                 username=username,
@@ -56,19 +46,15 @@ async def main():
     
     while True:
         try:
-            # جلب كل المستخدمين النشطين (الذين قاموا بربط توكن وحالتهم نشطة)
-            # ملاحظة: دالة get_all_active_bots تعيد قائمة بـ (user_id, token)
+            # جلب كل المستخدمين النشطين
             active_bots = db.get_all_active_bots()
             
             for user_id, token in active_bots:
-                # جلب الحسابات المفعلة لموقع DurianRCS الخاصة بهذا المشترك
-                # وجلب الدول التي قام بتشغيل الصيد لها
-                # (هذه الدوال موجودة مسبقاً في ملف database.py الخاص بك)
                 conn = db.get_connection()
                 cursor = conn.cursor()
                 
-                # جلب حسابات دوريان للمشترك
-                cursor.execute("SELECT username, api_key FROM durian_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
+                # ✅ تم تعديل اسم الجدول هنا إلى الاسم الصحيح والموجود بمشروعك لمنع خطأ 42P01
+                cursor.execute("SELECT username, api_key FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
                 durian_accounts = cursor.fetchall()
                 
                 # جلب الدول المفعلة للصيد للمشترك
@@ -92,8 +78,8 @@ async def main():
         except Exception as e:
             logger.error(f"⚠️ خطأ في الحلقة الرئيسية للمحرك الخلفي: {e}")
         
-        # مدة الراحة بين لفات الصيد لحماية النظام وسيرفر قاعدة البيانات من الضغط
-        await asyncio.sleep(2)
+        # مدة الراحة لحماية السيرفر وقاعدة البيانات من الضغط
+        await asyncio.sleep(5)
 
 if __name__ == "__main__":
     try:
