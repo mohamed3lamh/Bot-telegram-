@@ -683,48 +683,52 @@ async def show_country_settings(update: Update, user_id: int, country_code: str)
     await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 # ==================== 7. دالة الصيد والضخ ====================
 async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
+    """
+    مهمة دورية محسنة وخفيفة جداً تحل محل حلقة الصيد القديمة المسببة للبطء.
+    تقوم فقط بقراءة التقارير التي جهزها المحرك الخلفي المركزي في جدول الانتظار وإرسالها للمشترك.
+    """
     job = context.job
     user_id = job.user_id
-    active_accounts = db.get_active_site_accounts(user_id)
     channel = db.get_hunting_channel(user_id)
-    countries = db.get_user_countries(user_id)
 
-    if not active_accounts or not channel or not countries:
+    if not channel:
         job.schedule_removal()
         return
 
     if user_id not in repeat_tracker:
         repeat_tracker[user_id] = {}
 
-    async def process_account_country(username, api_key, country_code):
-        """معالجة دولة واحدة لحساب واحد، تُنفذ بشكل متوازٍ"""
-        clean_country = str(country_code).strip()
-        try:
-            async with semaphore:
-               await asyncio.sleep(0.8) 
-               result = await DurianAPI.order_number_by_name(username, api_key, clean_country, project_id="0257")
-            if not result or result.get("status") != "success":
-                return
-            phone_number = result.get("number")
-            if not phone_number:
-                return
+    try:
+        # جلب التقارير غير المرسلة الخاصة بهذا المشترك فقط من صندوق البريد المشترك
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, phone_number, country_code, status_text, status_type 
+            FROM pending_reports 
+            WHERE user_id = %s AND is_sent = FALSE 
+            ORDER BY id ASC 
+            LIMIT 5
+        """, (user_id,))
+        unsent_reports = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
-            # --- الفحص السريع (اختياري، يمكن تعطيله مؤقتًا للسرعة) ---
-            status_text = "🔴 حالة غير معروفة"  # افتراضي إذا لم يتم الفحص
-            try:
-                account_checker = await telegram_checker.get_available_account()
-                if account_checker:
-                    check_result = await telegram_checker.check_phone(account_checker, phone_number)
-                    raw_status = check_result.get("status_text", "")
-                    if "HAS_SESSION" in raw_status or "محظور" in raw_status:
-                        status_text = f"⚠️ {raw_status}"
-                    else:
-                        status_text = "✅ الرقم بدون جلسة"  # تم الفحص بنجاح
-                # إذا لم يكن هناك حساب فاحص، يبقى "🔴 حالة غير معروفة"
-            except Exception as e:
-                logger.warning(f"فحص الرقم {phone_number} فشل: {e}")
-                # يبقى "🔴 حالة غير معروفة"
-            # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة) ---
+        for report in unsent_reports:
+            report_id, phone_number, country_code, status_text, status_type = report
+
+            # --- جلب كود حساب الـ Durian المرتبط بالرقم من تفاصيل قاعدة البيانات لإرساله مع الأزرار ---
+            # الحفاظ على مصفوفة أزرارك المعتمدة على الـ username القديم
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT username FROM durian_accounts WHERE user_id = %s AND is_active = TRUE LIMIT 1", (user_id,))
+            user_row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            username = user_row[0] if user_row else "user"
+
+            # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة الخاصة بك) ---
+            clean_country = str(country_code).strip()
             country_name = clean_country.upper()
             country_flag = "🌐"
             if clean_country.upper() in COUNTRY_INFO:
@@ -732,27 +736,27 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 country_name = info["name"]
                 country_flag = info["emoji"]
             else:
-                # fallback للخريطة القديمة
                 for prefix, info in COUNTRY_MAP.items():
                     if phone_number.replace("+", "").startswith(prefix):
                         country_name = info["name"]
                         country_flag = info["emoji"]
                         break
 
-            # --- تحديث عداد التكرار ---
+            # --- تحديث عداد التكرار الخاص بك ---
             repeat_tracker[user_id][phone_number] = repeat_tracker[user_id].get(phone_number, 0) + 1
             repeat_count = repeat_tracker[user_id][phone_number]
 
-            # --- صياغة الرسالة ---
+            # --- صياغة الرسالة (نفس كليشتك القديمة تماماً بدون تغيير حرف) ---
             message_text = (
-                        f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
-                        f"<b>    - الـرقـــــم : <code>{phone_number}</code></b>\n"
-                        f"<b>    - الـدولـة : {country_name} {country_flag}</b>\n"
-                        f"<b>    - الـحـالـة : {status_text}</b>\n"
-                        f"<b>    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة</b>\n"
-                        f"<b>    - الــكـــود : قـيـد الإنـتـظـار ❗️</b>"
-                    )
+                f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
+                f"<b>    - الـرقـــــم : <code>{phone_number}</code></b>\n"
+                f"<b>    - الـدولـة : {country_name} {country_flag}</b>\n"
+                f"<b>    - الـحـالـة : {status_text}</b>\n"
+                f"<b>    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة</b>\n"
+                f"<b>    - الــكـــود : قـيـد الإنـتـظـار ❗️</b>"
+            )
 
+            # نفس خريطة الأزرار الشفافة التفاعلية الخاصة بك بدون أي مساس بها لضمان التوافق مع الكولباك
             keyboard = [
                 [
                     InlineKeyboardButton("- نسبة الوصول .", callback_data=f"rate_{username}_{phone_number}"),
@@ -768,23 +772,20 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-            await context.bot.send_message(
-                chat_id=channel,
-                text=message_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup
-            )
-        except Exception as e:
-            logger.error(f"Error for user {user_id}, account {username}, country {country_code}: {e}")
+            try:
+                await context.bot.send_message(
+                    chat_id=channel,
+                    text=message_text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup
+                )
+                # تأكيد إرسال التقرير بنجاح لقناة المشترك لمنع التكرار
+                db.mark_report_as_sent(report_id)
+            except Exception as send_err:
+                logger.error(f"⚠️ فشل إرسال التقرير {report_id} للمشترك {user_id}: {send_err}")
 
-    # بناء قائمة المهام لجميع الحسابات والدول
-    tasks = []
-    for username, api_key in active_accounts:
-        for country_code in countries:
-            tasks.append(process_account_country(username, api_key, country_code))
-
-    # تنفيذ جميع المهام بشكل متوازٍ
-    await asyncio.gather(*tasks)
+    except Exception as e:
+        logger.error(f"⚠️ خطأ أثناء جلب وإرسال التقارير للمشترك {user_id}: {e}")
 
 def create_user_app(token: str):
     app = Application.builder().token(token).build()
