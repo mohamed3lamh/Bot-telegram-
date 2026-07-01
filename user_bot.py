@@ -716,16 +716,15 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
         for report in unsent_reports:
             report_id, phone_number, country_code, status_text, status_type = report
 
-            # --- جلب كود حساب الـ Durian المرتبط بالرقم باستخدام الاسم الصحيح للجدول في مشروعك ---
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT username FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE LIMIT 1", (user_id,))
-        user_row = cursor.fetchone()
-        cursor.close()
-        conn.close()
+            # ✅ تم تعديل المحاذاة هنا لتصبح داخل حلقة الـ for (دخلت بمقدار 1 Tab أو 4 مسافات إضافية)
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT username FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE LIMIT 1", (user_id,))
+            user_row = cursor.fetchone()
+            cursor.close()
+            conn.close()
 
-
-            
+            # ✅ تم وزن السطر تماماً مع الأسطر السابقة داخل الـ for
             username = user_row[0] if user_row else "user"
 
             # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة الخاصة بك) ---
