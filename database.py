@@ -58,7 +58,7 @@ def init_db():
     ''')
     conn.commit()
 
-    # إضافة عمود plan_type إذا لم يكن موجوداً
+    # إضافة عمود plan_type إذا لم يكن موجوداً (مع المسافة البادئة الصحيحة)
     if not column_exists('user_bots', 'plan_type'):
         cursor.execute("ALTER TABLE user_bots ADD COLUMN plan_type TEXT DEFAULT '1'")
         conn.commit()
@@ -66,15 +66,8 @@ def init_db():
     if not column_exists('user_bots', 'expires_at'):
         cursor.execute("ALTER TABLE user_bots ADD COLUMN expires_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP + INTERVAL '30 days'")
         conn.commit()
-        
     if not column_exists('user_bots', 'is_banned'):
         cursor.execute("ALTER TABLE user_bots ADD COLUMN is_banned INTEGER DEFAULT 0")
-        conn.commit()
-
-    # 🛠️ [إصلاح حاسم]: إضافة عمود is_hunting لجدول user_bots تلقائياً لتفادي انهيار المحرك
-    if not column_exists('user_bots', 'is_hunting'):
-        logger.info("⚙️ جاري تحديث قاعدة البيانات: إضافة عمود 'is_hunting' إلى جدول 'user_bots'...")
-        cursor.execute("ALTER TABLE user_bots ADD COLUMN is_hunting INTEGER DEFAULT 0")
         conn.commit()
 
     cursor.execute('''
@@ -83,6 +76,7 @@ def init_db():
             channel_id TEXT NOT NULL
         )
     ''')
+    conn.commit()
     conn.commit()
 
     cursor.execute('''
@@ -229,8 +223,8 @@ def init_db():
         'plan_price_3': '8',
         'usdt_wallet': 'TYourUSDTAddressHere',
         'trx_wallet': 'TSDqje1oWAcDY8Q5XzUDLWksWMSPqxv3PB',
-        'usdt_rate': '1',   
-        'trx_rate': '0.16'   
+        'usdt_rate': '1',   # 1 USDT = 1 USD
+        'trx_rate': '0.16'   # 1 TRX = 0.16 USD (مثال، يحدد السعر)
     }
     for k, v in defaults.items():
         cursor.execute("""
@@ -250,7 +244,7 @@ def init_db():
         )
     """)
     conn.commit()
-
+    
     cursor.close()
     conn.close()
 
@@ -259,6 +253,7 @@ def save_site_account_v2(user_id, username, api_key):
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        # حد الحسابات بناءً على الخطة
         plan = get_user_plan(user_id)
         max_accounts = int(plan)
         cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s", (user_id,))
@@ -295,7 +290,7 @@ def toggle_site_account(user_id, account_id):
         if not row:
             return
         current_status = row[0]
-        if not current_status:  
+        if not current_status:  # سيُفعّل الآن
             plan = get_user_plan(user_id)
             max_active = int(plan)
             cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
@@ -326,6 +321,7 @@ def delete_site_account(user_id, account_id):
         conn.close()
 
 def get_site_account(user_id):
+    """الحساب النشط فقط"""
     conn = get_connection()
     cursor = conn.cursor()
     try:
@@ -337,6 +333,7 @@ def get_site_account(user_id):
         conn.close()
 
 def get_active_site_accounts(user_id):
+    """استرجاع جميع حسابات الموقع النشطة للمستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     try:
@@ -345,11 +342,12 @@ def get_active_site_accounts(user_id):
             (user_id,)
         )
         rows = cursor.fetchall()
-        return rows  
+        return rows  # list of (username, api_key)
     finally:
         cursor.close()
         conn.close()
 
+# --- باقي الدوال (موجودة مسبقاً) ---
 def save_bot(user_id, token):
     conn = get_connection()
     cursor = conn.cursor()
@@ -366,9 +364,11 @@ def save_bot(user_id, token):
 def add_days_to_user(user_id, days, plan_type=None):
     conn = get_connection()
     cursor = conn.cursor()
+    # هل يوجد سجل للمستخدم؟
     cursor.execute('SELECT token FROM user_bots WHERE user_id = %s', (user_id,))
     row = cursor.fetchone()
     if row:
+        # تحديث مستخدم موجود
         if plan_type:
             cursor.execute('''
                 UPDATE user_bots
@@ -383,6 +383,7 @@ def add_days_to_user(user_id, days, plan_type=None):
                 WHERE user_id = %s
             ''', (f"{days} days", user_id))
     else:
+        # إنشاء سجل جديد مع توكن مؤقت فريد
         temp_token = f'pending_{user_id}'
         if plan_type:
             cursor.execute('''
@@ -399,6 +400,7 @@ def add_days_to_user(user_id, days, plan_type=None):
     conn.close()
 
 def get_user_plan(user_id):
+    """جلب نوع خطة المستخدم (1, 2, 3)"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT plan_type FROM user_bots WHERE user_id = %s", (user_id,))
@@ -498,23 +500,12 @@ def set_hunting_status(user_id, is_hunting):
     status_val = 1 if is_hunting else 0
     conn = get_connection()
     cursor = conn.cursor()
-    
-    # تحديث جدول الحالة المخصص
     cursor.execute('''
         INSERT INTO user_hunting_status (user_id, is_hunting)
         VALUES (%s, %s)
         ON CONFLICT (user_id) DO UPDATE SET is_hunting = EXCLUDED.is_hunting
     ''', (user_id, status_val))
     conn.commit()
-    
-    # تحديث العمود الجديد داخل جدول البوتات الرئيسي ليتطابق مع الـ HuntingWorker
-    try:
-        cursor.execute('UPDATE user_bots SET is_hunting = %s WHERE user_id = %s', (status_val, user_id))
-        conn.commit()
-    except Exception as e:
-        logger.warning(f"Could not update is_hunting in user_bots table: {e}")
-        conn.rollback()
-        
     cursor.close()
     conn.close()
 
@@ -553,6 +544,7 @@ def delete_user_country(user_id, country_name):
         cursor.close()
         conn.close()
 
+# ---------- نظام الاشتراكات المعلقة ----------
 def add_pending_subscription(user_id, plan, payment_method, amount_crypto, wallet_address):
     conn = get_connection()
     cursor = conn.cursor()
@@ -606,6 +598,7 @@ def get_all_checkers():
     return rows
 
 def delete_checker(account_id):
+    """حذف حساب فاحص نهائيًا من قاعدة البيانات"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM telegram_accounts WHERE id = %s", (account_id,))
@@ -707,6 +700,7 @@ def get_best_telegram_account():
     conn.close()
     return row
 
+# ---------- سجل العمليات ----------
 def log_activity(user_id, action, details=""):
     conn = get_connection()
     cursor = conn.cursor()
@@ -725,6 +719,7 @@ def get_recent_activities(limit=50):
     conn.close()
     return rows
 
+# ---------- تذاكر الدعم ----------
 def create_ticket(user_id, subject, message):
     conn = get_connection()
     cursor = conn.cursor()
@@ -769,6 +764,7 @@ def close_ticket(ticket_id):
     cursor.close()
     conn.close()
 
+# ---------- الإعدادات ----------
 def get_setting(key, default=None):
     conn = get_connection()
     cursor = conn.cursor()
@@ -801,6 +797,7 @@ def get_all_settings():
     return rows
 
 def update_country_settings(user_id, country_code, number_type=None, session_status=None):
+    """تحديث إعدادات دولة معينة"""
     conn = get_connection()
     cursor = conn.cursor()
     if number_type is not None:
@@ -814,6 +811,7 @@ def update_country_settings(user_id, country_code, number_type=None, session_sta
     conn.close()
 
 def get_country_settings(user_id, country_code):
+    """جلب إعدادات دولة معينة"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT number_type, session_status FROM user_countries WHERE user_id = %s AND country_name = %s",
@@ -824,64 +822,3 @@ def get_country_settings(user_id, country_code):
     if row:
         return {"number_type": row[0] or "all", "session_status": row[1] or "all"}
     return {"number_type": "all", "session_status": "all"}
-
-def insert_pending_report(user_id, username, phone_number, country_code, status_text, status_type):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO pending_reports (user_id, username, phone_number, country_code, status_text, status_type)
-        VALUES (%s, %s, %s, %s, %s, %s)
-    """, (user_id, username, phone_number, country_code, status_text, status_type))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-def get_unsent_reports_for_user(user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, username, phone_number, country_code, status_text, status_type 
-        FROM pending_reports 
-        WHERE user_id = %s AND is_sent = FALSE
-        ORDER BY id ASC
-    """, (user_id,))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
-
-def mark_report_as_sent(report_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE pending_reports SET is_sent = TRUE WHERE id = %s
-    """, (report_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-def init_reports_table():
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS pending_reports (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                username VARCHAR(255) NOT NULL,
-                phone_number VARCHAR(50) NOT NULL,
-                country_code VARCHAR(20) NOT NULL,
-                status_text TEXT NOT NULL,
-                status_type VARCHAR(50) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_sent BOOLEAN DEFAULT FALSE
-            )
-        """)
-        conn.commit()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        logger.error(f"⚠️ خطأ أثناء تهيئة جدول التقارير: {e}")
-
-# استدعاء تلقائي آمن للجدول المستقل
-init_reports_table()

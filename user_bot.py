@@ -685,38 +685,46 @@ async def show_country_settings(update: Update, user_id: int, country_code: str)
 async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     user_id = job.user_id
+    active_accounts = db.get_active_site_accounts(user_id)
     channel = db.get_hunting_channel(user_id)
+    countries = db.get_user_countries(user_id)
 
-    if not channel:
+    if not active_accounts or not channel or not countries:
         job.schedule_removal()
         return
 
     if user_id not in repeat_tracker:
         repeat_tracker[user_id] = {}
 
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, phone_number, country_code, status_text, status_type 
-            FROM pending_reports 
-            WHERE user_id = %s AND is_sent = FALSE 
-            ORDER BY id ASC 
-            LIMIT 5
-        """, (user_id,))
-        unsent_reports = cursor.fetchall()
-        
-        cursor.execute("SELECT username FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE LIMIT 1", (user_id,))
-        user_row = cursor.fetchone()
-        username = user_row[0] if user_row else "user"
-        
-        cursor.close()
-        conn.close()
+    async def process_account_country(username, api_key, country_code):
+        """معالجة دولة واحدة لحساب واحد، تُنفذ بشكل متوازٍ"""
+        clean_country = str(country_code).strip()
+        try:
+            async with semaphore:
+               await asyncio.sleep(0.8) 
+               result = await DurianAPI.order_number_by_name(username, api_key, clean_country, project_id="0257")
+            if not result or result.get("status") != "success":
+                return
+            phone_number = result.get("number")
+            if not phone_number:
+                return
 
-        for report in unsent_reports:
-            report_id, phone_number, country_code, status_text, status_type = report
-
-            clean_country = str(country_code).strip()
+            # --- الفحص السريع (اختياري، يمكن تعطيله مؤقتًا للسرعة) ---
+            status_text = "🔴 حالة غير معروفة"  # افتراضي إذا لم يتم الفحص
+            try:
+                account_checker = await telegram_checker.get_available_account()
+                if account_checker:
+                    check_result = await telegram_checker.check_phone(account_checker, phone_number)
+                    raw_status = check_result.get("status_text", "")
+                    if "HAS_SESSION" in raw_status or "محظور" in raw_status:
+                        status_text = f"⚠️ {raw_status}"
+                    else:
+                        status_text = "✅ الرقم بدون جلسة"  # تم الفحص بنجاح
+                # إذا لم يكن هناك حساب فاحص، يبقى "🔴 حالة غير معروفة"
+            except Exception as e:
+                logger.warning(f"فحص الرقم {phone_number} فشل: {e}")
+                # يبقى "🔴 حالة غير معروفة"
+            # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة) ---
             country_name = clean_country.upper()
             country_flag = "🌐"
             if clean_country.upper() in COUNTRY_INFO:
@@ -724,23 +732,26 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 country_name = info["name"]
                 country_flag = info["emoji"]
             else:
+                # fallback للخريطة القديمة
                 for prefix, info in COUNTRY_MAP.items():
                     if phone_number.replace("+", "").startswith(prefix):
                         country_name = info["name"]
                         country_flag = info["emoji"]
                         break
 
+            # --- تحديث عداد التكرار ---
             repeat_tracker[user_id][phone_number] = repeat_tracker[user_id].get(phone_number, 0) + 1
             repeat_count = repeat_tracker[user_id][phone_number]
 
+            # --- صياغة الرسالة ---
             message_text = (
-                f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
-                f"<b>    - الـرقـــــم : <code>{phone_number}</code></b>\n"
-                f"<b>    - الـدولـة : {country_name} {country_flag}</b>\n"
-                f"<b>    - الـحـالـة : {status_text}</b>\n"
-                f"<b>    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة</b>\n"
-                f"<b>    - الــكـــود : قـيـد الإنـتـظـار ❗️</b>"
-            )
+                        f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
+                        f"<b>    - الـرقـــــم : <code>{phone_number}</code></b>\n"
+                        f"<b>    - الـدولـة : {country_name} {country_flag}</b>\n"
+                        f"<b>    - الـحـالـة : {status_text}</b>\n"
+                        f"<b>    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة</b>\n"
+                        f"<b>    - الــكـــود : قـيـد الإنـتـظـار ❗️</b>"
+                    )
 
             keyboard = [
                 [
@@ -757,19 +768,23 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-            try:
-                await context.bot.send_message(
-                    chat_id=channel,
-                    text=message_text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=reply_markup
-                )
-                db.mark_report_as_sent(report_id)
-            except Exception as send_err:
-                logger.error(f"⚠️ فشل إرسال التقرير {report_id} للمشترك {user_id}: {send_err}")
+            await context.bot.send_message(
+                chat_id=channel,
+                text=message_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logger.error(f"Error for user {user_id}, account {username}, country {country_code}: {e}")
 
-    except Exception as e:
-        logger.error(f"⚠️ خطأ أثناء جلب وإرسال التقارير للمشترك {user_id}: {e}")
+    # بناء قائمة المهام لجميع الحسابات والدول
+    tasks = []
+    for username, api_key in active_accounts:
+        for country_code in countries:
+            tasks.append(process_account_country(username, api_key, country_code))
+
+    # تنفيذ جميع المهام بشكل متوازٍ
+    await asyncio.gather(*tasks)
 
 def create_user_app(token: str):
     app = Application.builder().token(token).build()
