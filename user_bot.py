@@ -683,10 +683,6 @@ async def show_country_settings(update: Update, user_id: int, country_code: str)
     await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 # ==================== 7. دالة الصيد والضخ ====================
 async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
-    """
-    مهمة دورية محسنة وخفيفة جداً تحل محل حلقة الصيد القديمة المسببة للبطء.
-    تقوم فقط بقراءة التقارير التي جهزها المحرك الخلفي المركزي في جدول الانتظار وإرسالها للمشترك.
-    """
     job = context.job
     user_id = job.user_id
     channel = db.get_hunting_channel(user_id)
@@ -699,7 +695,6 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
         repeat_tracker[user_id] = {}
 
     try:
-        # جلب التقارير غير المرسلة الخاصة بهذا المشترك فقط من صندوق البريد المشترك
         conn = db.get_connection()
         cursor = conn.cursor()
         cursor.execute("""
@@ -710,24 +705,17 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
             LIMIT 5
         """, (user_id,))
         unsent_reports = cursor.fetchall()
+        
+        cursor.execute("SELECT username FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE LIMIT 1", (user_id,))
+        user_row = cursor.fetchone()
+        username = user_row[0] if user_row else "user"
+        
         cursor.close()
         conn.close()
 
         for report in unsent_reports:
             report_id, phone_number, country_code, status_text, status_type = report
 
-            # ✅ تم تعديل المحاذاة هنا لتصبح داخل حلقة الـ for (دخلت بمقدار 1 Tab أو 4 مسافات إضافية)
-            conn = db.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT username FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE LIMIT 1", (user_id,))
-            user_row = cursor.fetchone()
-            cursor.close()
-            conn.close()
-
-            # ✅ تم وزن السطر تماماً مع الأسطر السابقة داخل الـ for
-            username = user_row[0] if user_row else "user"
-
-            # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة الخاصة بك) ---
             clean_country = str(country_code).strip()
             country_name = clean_country.upper()
             country_flag = "🌐"
@@ -742,11 +730,9 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                         country_flag = info["emoji"]
                         break
 
-            # --- تحديث عداد التكرار الخاص بك ---
             repeat_tracker[user_id][phone_number] = repeat_tracker[user_id].get(phone_number, 0) + 1
             repeat_count = repeat_tracker[user_id][phone_number]
 
-            # --- صياغة الرسالة (نفس كليشتك القديمة تماماً بدون تغيير حرف) ---
             message_text = (
                 f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
                 f"<b>    - الـرقـــــم : <code>{phone_number}</code></b>\n"
@@ -756,7 +742,6 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 f"<b>    - الــكـــود : قـيـد الإنـتـظـار ❗️</b>"
             )
 
-            # نفس خريطة الأزرار الشفافة التفاعلية الخاصة بك بدون أي مساس بها لضمان التوافق مع الكولباك
             keyboard = [
                 [
                     InlineKeyboardButton("- نسبة الوصول .", callback_data=f"rate_{username}_{phone_number}"),
@@ -779,7 +764,6 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                     parse_mode=ParseMode.HTML,
                     reply_markup=reply_markup
                 )
-                # تأكيد إرسال التقرير بنجاح لقناة المشترك لمنع التكرار
                 db.mark_report_as_sent(report_id)
             except Exception as send_err:
                 logger.error(f"⚠️ فشل إرسال التقرير {report_id} للمشترك {user_id}: {send_err}")
