@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, CallbackContext
 from telegram.constants import ParseMode
@@ -696,9 +697,25 @@ async def show_country_settings(update: Update, user_id: int, country_code: str)
 async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     user_id = job.user_id
+    
+    t_db1_start = time.perf_counter()
     active_accounts = db.get_active_site_accounts(user_id)
+    t_db1_end = time.perf_counter()
+    
+    t_db2_start = time.perf_counter()
     channel = db.get_hunting_channel(user_id)
+    t_db2_end = time.perf_counter()
+    
+    t_db3_start = time.perf_counter()
     countries = db.get_user_countries(user_id)
+    t_db3_end = time.perf_counter()
+    
+    logger.info(
+        f"[PERF_TRACE] [User: {user_id}] Initial DB calls duration: "
+        f"get_active_site_accounts={t_db1_end - t_db1_start:.4f}s, "
+        f"get_hunting_channel={t_db2_end - t_db2_start:.4f}s, "
+        f"get_user_countries={t_db3_end - t_db3_start:.4f}s"
+    )
 
     if not active_accounts or not channel or not countries:
         job.schedule_removal()
@@ -711,21 +728,56 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
         """معالجة دولة واحدة لحساب واحد، تُنفذ بشكل متوازٍ"""
         clean_country = str(country_code).strip()
         try:
+            t_sem_start = time.perf_counter()
             async with semaphore:
-               await asyncio.sleep(0.8) 
-               result = await DurianAPI.order_number_by_name(username, api_key, clean_country, project_id="0257")
+                t_sem_end = time.perf_counter()
+                t_sleep_start = time.perf_counter()
+                await asyncio.sleep(0.8) 
+                t_sleep_end = time.perf_counter()
+                
+                t_api_start = time.perf_counter()
+                result = await DurianAPI.order_number_by_name(username, api_key, clean_country, project_id="0257")
+                t_api_end = time.perf_counter()
+                
+            sem_delay = t_sem_end - t_sem_start
+            sleep_delay = t_sleep_end - t_sleep_start
+            api_delay = t_api_end - t_api_start
+            
+            logger.info(
+                f"[PERF_TRACE] [Task: {username}-{clean_country}] Queue/Semaphore wait={sem_delay:.4f}s, "
+                f"Sleep duration={sleep_delay:.4f}s, Durian API order={api_delay:.4f}s"
+            )
+
             if not result or result.get("status") != "success":
                 return
             phone_number = result.get("number")
             if not phone_number:
                 return
 
+            t_number_start = time.perf_counter()
+
             # --- الفحص السريع (اختياري، يمكن تعطيله مؤقتًا للسرعة) ---
             status_text = "🔴 حالة غير معروفة"  # افتراضي إذا لم يتم الفحص
             try:
+                t_get_checker_start = time.perf_counter()
                 account_checker = await telegram_checker.get_available_account()
+                t_get_checker_end = time.perf_counter()
+                
+                logger.info(
+                    f"[PERF_TRACE] [Number: {phone_number}] get_available_account duration: "
+                    f"{t_get_checker_end - t_get_checker_start:.4f}s"
+                )
+                
                 if account_checker:
+                    t_check_start = time.perf_counter()
                     check_result = await telegram_checker.check_phone(account_checker, phone_number)
+                    t_check_end = time.perf_counter()
+                    
+                    logger.info(
+                        f"[PERF_TRACE] [Number: {phone_number}] telegram_checker.check_phone duration: "
+                        f"{t_check_end - t_check_start:.4f}s"
+                    )
+                    
                     check_status = check_result.get("status")
                     raw_status = check_result.get("status_text", "")
                     if check_status in ["NO_SESSION", "HAS_SESSION", "BANNED", "INVALID"]:
@@ -737,10 +789,11 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                             status_text = "✅ الرقم بدون جلسة"
                     else:
                         status_text = "⚪️ غير معروف / معلق"
-                # إذا لم يكن هناك حساب فاحص، يبقى "🔴 حالة غير معروفة"
+                else:
+                    logger.info(f"[PERF_TRACE] [Number: {phone_number}] No checker account available for checking.")
             except Exception as e:
                 logger.warning(f"فحص الرقم {phone_number} فشل: {e}")
-                # يبقى "🔴 حالة غير معروفة"
+                
             # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة) ---
             country_name = clean_country.upper()
             country_flag = "🌐"
@@ -785,11 +838,22 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
+            t_send_start = time.perf_counter()
             await context.bot.send_message(
                 chat_id=channel,
                 text=message_text,
                 parse_mode=ParseMode.HTML,
                 reply_markup=reply_markup
+            )
+            t_send_end = time.perf_counter()
+            
+            logger.info(
+                f"[PERF_TRACE] [Number: {phone_number}] context.bot.send_message duration: "
+                f"{t_send_end - t_send_start:.4f}s"
+            )
+            logger.info(
+                f"[PERF_TRACE] [Number: {phone_number}] Total number-to-channel duration: "
+                f"{t_send_end - t_number_start:.4f}s"
             )
         except Exception as e:
             logger.error(f"Error for user {user_id}, account {username}, country {country_code}: {e}")

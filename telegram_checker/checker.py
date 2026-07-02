@@ -18,8 +18,16 @@ class TelegramChecker:
 
     async def check_phone(self, account, phone):
         """ فحص حالة الرقم والجلسة بدقة متناهية بناءً على رد سيرفر التلغرام الفوري. """
+        import time
+        t_start = time.perf_counter()
         try:
+            t_get_client_start = time.perf_counter()
             client = await telegram_client_manager.get_client(account)
+            t_get_client_end = time.perf_counter()
+            logger.info(
+                f"[PERF_TRACE] [Checker ID: {account.get('id')}] get_client duration: "
+                f"{t_get_client_end - t_get_client_start:.4f}s"
+            )
         except SessionUnauthorizedError:
             await account_manager.disable_account(account["id"])
             return {
@@ -29,8 +37,21 @@ class TelegramChecker:
             }
         try:
             # محاولة إرسال طلب الكود للرقم لمعرفة حالته وجلسته فوراً
+            t_send_code_start = time.perf_counter()
             await client.send_code_request(phone)
+            t_send_code_end = time.perf_counter()
+            logger.info(
+                f"[PERF_TRACE] [Checker ID: {account.get('id')}] send_code_request duration: "
+                f"{t_send_code_end - t_send_code_start:.4f}s"
+            )
+            
+            t_disc_start = time.perf_counter()
             await client.disconnect()
+            t_disc_end = time.perf_counter()
+            logger.info(
+                f"[PERF_TRACE] [Checker ID: {account.get('id')}] client.disconnect duration: "
+                f"{t_disc_end - t_disc_start:.4f}s"
+            )
             # إذا مر السطر السابق بدون أخطاء، فالرقم مفتوح وجاهز تماماً بدون باسورد
             return {
                 "status": "NO_SESSION",
@@ -38,7 +59,13 @@ class TelegramChecker:
                 "status_text": "✅ الرقم بدون جلسة"
             }
         except SessionPasswordNeededError:
+            t_disc_start = time.perf_counter()
             await client.disconnect()
+            t_disc_end = time.perf_counter()
+            logger.info(
+                f"[PERF_TRACE] [Checker ID: {account.get('id')}] [SessionPasswordNeededError] client.disconnect duration: "
+                f"{t_disc_end - t_disc_start:.4f}s"
+            )
             # الرقم شغال وموجود ولكن صاحبه وضع كلمة سر التحقق بخطوتين
             return {
                 "status": "HAS_SESSION",
@@ -46,7 +73,13 @@ class TelegramChecker:
                 "status_text": "⚠️ الرقم لديه جلسة"
             }
         except PhoneNumberBannedError:
+            t_disc_start = time.perf_counter()
             await client.disconnect()
+            t_disc_end = time.perf_counter()
+            logger.info(
+                f"[PERF_TRACE] [Checker ID: {account.get('id')}] [PhoneNumberBannedError] client.disconnect duration: "
+                f"{t_disc_end - t_disc_start:.4f}s"
+            )
             # الرقم طار وتم حظره من شركة التلغرام تماماً
             return {
                 "status": "BANNED",
@@ -54,7 +87,13 @@ class TelegramChecker:
                 "status_text": "🚯 محظور"
             }
         except PhoneNumberInvalidError:
+            t_disc_start = time.perf_counter()
             await client.disconnect()
+            t_disc_end = time.perf_counter()
+            logger.info(
+                f"[PERF_TRACE] [Checker ID: {account.get('id')}] [PhoneNumberInvalidError] client.disconnect duration: "
+                f"{t_disc_end - t_disc_start:.4f}s"
+            )
             return {
                 "status": "INVALID",
                 "phone": phone,
@@ -63,14 +102,26 @@ class TelegramChecker:
         except FloodWaitError as e:
             # في حال واجه الحساب الفاحص حظر مؤقت (سبام) من كثرة الفحص
             await flood_manager.set_flood(account["id"], e.seconds)
+            t_disc_start = time.perf_counter()
             await client.disconnect()
+            t_disc_end = time.perf_counter()
+            logger.info(
+                f"[PERF_TRACE] [Checker ID: {account.get('id')}] [FloodWaitError] client.disconnect duration: "
+                f"{t_disc_end - t_disc_start:.4f}s"
+            )
             return {
                 "status": "FLOOD",
                 "seconds": e.seconds,
                 "phone": phone
             }
         except Exception as e:
+            t_disc_start = time.perf_counter()
             await client.disconnect()
+            t_disc_end = time.perf_counter()
+            logger.info(
+                f"[PERF_TRACE] [Checker ID: {account.get('id')}] [Exception] client.disconnect duration: "
+                f"{t_disc_end - t_disc_start:.4f}s"
+            )
             return {
                 "status": "ERROR",
                 "error": str(e),
