@@ -6,7 +6,7 @@ from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
     SessionPasswordNeededError, PhoneNumberInvalidError
 )
-from .telegram_client import telegram_client_manager
+from .telegram_client import telegram_client_manager, SessionUnauthorizedError
 from .account_manager import account_manager
 from .flood_manager import flood_manager
 
@@ -103,10 +103,7 @@ class TelegramChecker:
         for phone in phones:
             account = await self.wait_for_account()
             result = await self.check_phone(account, phone)
-            if result["status"] == "FLOOD":
-                continue
-            if result["status"] == "BANNED":
-                await account_manager.disable_account(account["id"])
+            if result["status"] in ["FLOOD", "ACCOUNT_DISABLED"]:
                 continue
             results.append(result)
             if callback:
@@ -134,8 +131,7 @@ class BatchChecker:
                 queue.put_nowait(phone)
                 queue.task_done()
                 break
-            elif result["status"] == "BANNED":
-                await account_manager.disable_account(account["id"])
+            elif result["status"] == "ACCOUNT_DISABLED":
                 queue.put_nowait(phone)
                 queue.task_done()
                 break

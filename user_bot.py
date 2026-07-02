@@ -493,7 +493,18 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         phone = parts[2]
 
         # استخدام مالك البوت للبحث عن الحساب
-        owner_id = bot_owner_id if bot_owner_id is not None else user_id
+        owner_id = user_id
+        try:
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM user_bots WHERE token = %s", (context.bot.token,))
+            row = cursor.fetchone()
+            if row:
+                owner_id = row[0]
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error querying bot owner by token: {e}")
         accounts = db.get_all_site_accounts(owner_id)
         api_key = None
         for acc_id, acc_username, acc_api_key, _ in accounts:
@@ -715,11 +726,17 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 account_checker = await telegram_checker.get_available_account()
                 if account_checker:
                     check_result = await telegram_checker.check_phone(account_checker, phone_number)
+                    check_status = check_result.get("status")
                     raw_status = check_result.get("status_text", "")
-                    if "HAS_SESSION" in raw_status or "محظور" in raw_status:
-                        status_text = f"⚠️ {raw_status}"
+                    if check_status in ["NO_SESSION", "HAS_SESSION", "BANNED", "INVALID"]:
+                        if "HAS_SESSION" in raw_status or "محظور" in raw_status:
+                            status_text = f"⚠️ {raw_status}"
+                        elif check_status == "INVALID":
+                            status_text = "⚠️ رقم غير صالح"
+                        else:
+                            status_text = "✅ الرقم بدون جلسة"
                     else:
-                        status_text = "✅ الرقم بدون جلسة"  # تم الفحص بنجاح
+                        status_text = "⚪️ غير معروف / معلق"
                 # إذا لم يكن هناك حساب فاحص، يبقى "🔴 حالة غير معروفة"
             except Exception as e:
                 logger.warning(f"فحص الرقم {phone_number} فشل: {e}")
