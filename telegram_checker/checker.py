@@ -2,7 +2,9 @@ import asyncio
 import logging
 from telethon.errors import (
     FloodWaitError, PhoneNumberBannedError,
-    SessionPasswordNeededError, PhoneNumberInvalidError
+    SessionPasswordNeededError, PhoneNumberInvalidError,
+    PhoneMigrateError, NetworkMigrateError, UserMigrateError,
+    PhoneNumberUnoccupiedError
 )
 from .telegram_client import telegram_client_manager, SessionUnauthorizedError
 from .account_manager import account_manager
@@ -107,6 +109,82 @@ class TelegramChecker:
                     "phone": phone,
                     "status_text": "⚠️ رقم غير صالح"
                 }
+            except PhoneNumberUnoccupiedError:
+                # الرقم غير مسجل في تيليغرام → بدون جلسة بالتأكيد
+                logger.info(
+                    f"[Checker] #{account_id}: الرقم {phone} غير مسجل في تيليغرام (NO_SESSION)"
+                )
+                return {
+                    "status": "NO_SESSION",
+                    "phone": phone,
+                    "status_text": "✅ الرقم بدون جلسة"
+                }
+            except (PhoneMigrateError, NetworkMigrateError, UserMigrateError) as e:
+                # الرقم مسجل في DC مختلف — نفصل ونحاول مجدداً عبر DC الصحيح
+                new_dc = getattr(e, 'new_dc', '?')
+                logger.info(
+                    f"[Checker] #{account_id}: الرقم {phone} في DC {new_dc} — "
+                    f"إعادة الاتصال بالـ DC الصحيح..."
+                )
+                try:
+                    await telegram_client_manager.disconnect_client(account_id)
+                except Exception:
+                    pass
+                try:
+                    # إعادة الاتصال — Telethon ستتوجه للـ DC الصحيح تلقائياً
+                    client2 = await telegram_client_manager.get_client(account)
+                    await asyncio.wait_for(
+                        client2.send_code_request(phone),
+                        timeout=15.0
+                    )
+                    logger.info(
+                        f"[Checker] #{account_id}: نجح send_code_request بعد DC migration"
+                    )
+                    return {
+                        "status": "NO_SESSION",
+                        "phone": phone,
+                        "status_text": "✅ الرقم بدون جلسة"
+                    }
+                except SessionPasswordNeededError:
+                    return {
+                        "status": "HAS_SESSION",
+                        "phone": phone,
+                        "status_text": "⚠️ الرقم لديه جلسة"
+                    }
+                except PhoneNumberUnoccupiedError:
+                    return {
+                        "status": "NO_SESSION",
+                        "phone": phone,
+                        "status_text": "✅ الرقم بدون جلسة"
+                    }
+                except PhoneNumberBannedError:
+                    return {
+                        "status": "BANNED",
+                        "phone": phone,
+                        "status_text": "📵 مـحـظـور"
+                    }
+                except FloodWaitError as fe:
+                    await flood_manager.set_flood(account_id, fe.seconds)
+                    return {
+                        "status": "FLOOD",
+                        "seconds": fe.seconds,
+                        "phone": phone,
+                        "status_text": f"🚫 حظر مؤقت {fe.seconds} ثانية"
+                    }
+                except Exception as retry_e:
+                    logger.error(
+                        f"[Checker] #{account_id}: فشل إعادة المحاولة بعد DC migration: {retry_e}"
+                    )
+                    try:
+                        await telegram_client_manager.disconnect_client(account_id)
+                    except Exception:
+                        pass
+                    return {
+                        "status": "ERROR",
+                        "error": str(retry_e),
+                        "phone": phone,
+                        "status_text": "⚪️ غير معروف / معلق"
+                    }
             except FloodWaitError as e:
                 logger.warning(
                     f"[Checker] #{account_id}: FloodWait {e.seconds}s"
