@@ -29,11 +29,21 @@ class TelegramChecker:
                 f"{t_get_client_end - t_get_client_start:.4f}s"
             )
         except SessionUnauthorizedError:
-            await account_manager.disable_account(account["id"])
+            # ⚠️ الإصلاح: بدلاً من التعطيل النهائي، نضع توقفاً مؤقتاً (5 دقائق)
+            # ثم نحاول إعادة الاتصال لاحقاً بدلاً من قتل الحساب للأبد
+            logger.warning(
+                f"[Checker ID: {account.get('id')}] الجلسة غير مصرح بها - "
+                f"تطبيق توقف مؤقت 300 ثانية بدلاً من التعطيل الدائم"
+            )
+            await flood_manager.set_flood(account["id"], seconds=300)
+            try:
+                await telegram_client_manager.disconnect_client(account["id"])
+            except Exception:
+                pass
             return {
-                "status": "ACCOUNT_DISABLED",
+                "status": "SESSION_EXPIRED",
                 "phone": phone,
-                "status_text": "❌ حساب الفاحص تالف وتم تعطيله"
+                "status_text": "⚠️ جلسة الفاحص منتهية - إعادة محاولة بعد 5 دقائق"
             }
         try:
             # محاولة إرسال طلب الكود للرقم لمعرفة حالته وجلسته فوراً
