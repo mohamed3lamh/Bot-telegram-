@@ -1,12 +1,19 @@
 from database import get_connection
 from datetime import datetime, timezone
+import time
 
 class AccountManager:
     def __init__(self):
-        pass
+        self._accounts_cache = None
+        self._accounts_cache_ts = 0
+        self._ACCOUNTS_CACHE_TTL = 15  # ثانية
 
     async def get_all_accounts(self):
-        """ جلب جميع حسابات تيليجرام المفعلة. """
+        """ جلب جميع حسابات تيليجرام المفعلة (مع كاش 15 ثانية). """
+        now = time.monotonic()
+        if self._accounts_cache is not None and (now - self._accounts_cache_ts) < self._ACCOUNTS_CACHE_TTL:
+            return self._accounts_cache
+
         conn = get_connection()
         cur = conn.cursor()
         cur.execute("""
@@ -29,7 +36,15 @@ class AccountManager:
                 "is_active": row[4],
                 "flood_until": row[5]
             })
+
+        self._accounts_cache = accounts
+        self._accounts_cache_ts = now
         return accounts
+
+    def invalidate_accounts_cache(self):
+        """ إبطال الكاش فوراً (يُستخدم عند تعطيل حساب أو تغيير حالته). """
+        self._accounts_cache = None
+        self._accounts_cache_ts = 0
 
     async def get_available_account(self):
         """ يرجع أول حساب صالح للاستخدام (ليس معطل وليس داخل FloodWait). """
@@ -73,6 +88,7 @@ class AccountManager:
         conn.commit()
         cur.close()
         conn.close()
+        self.invalidate_accounts_cache()  # إبطال الكاش فوراً
 
     async def enable_account(self, account_id):
         """ إعادة تفعيل الحساب. """
