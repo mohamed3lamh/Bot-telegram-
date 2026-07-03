@@ -724,21 +724,16 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
             t_sem_start = time.perf_counter()
             async with semaphore:
                 t_sem_end = time.perf_counter()
-                t_sleep_start = time.perf_counter()
-                await asyncio.sleep(0.8) 
-                t_sleep_end = time.perf_counter()
-                
                 t_api_start = time.perf_counter()
                 result = await DurianAPI.order_number_by_name(username, api_key, clean_country, project_id="0257")
                 t_api_end = time.perf_counter()
                 
             sem_delay = t_sem_end - t_sem_start
-            sleep_delay = t_sleep_end - t_sleep_start
             api_delay = t_api_end - t_api_start
             
             logger.info(
                 f"[PERF_TRACE] [Task: {username}-{clean_country}] Queue/Semaphore wait={sem_delay:.4f}s, "
-                f"Sleep duration={sleep_delay:.4f}s, Durian API order={api_delay:.4f}s"
+                f"Durian API order={api_delay:.4f}s"
             )
 
             if not result or result.get("status") != "success":
