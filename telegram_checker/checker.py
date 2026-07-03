@@ -22,6 +22,7 @@ class TelegramChecker:
         t_start = time.perf_counter()
         try:
             t_get_client_start = time.perf_counter()
+            # الدالة get_client تقوم حالياً بالقفل وإدارة المهلة وحل مشكلة تسريب الاتصالات داخلياً
             client = await telegram_client_manager.get_client(account)
             t_get_client_end = time.perf_counter()
             logger.info(
@@ -29,13 +30,11 @@ class TelegramChecker:
                 f"{t_get_client_end - t_get_client_start:.4f}s"
             )
         except SessionUnauthorizedError:
-            # ⚠️ الإصلاح: بدلاً من التعطيل النهائي، نضع توقفاً مؤقتاً (5 دقائق)
-            # ثم نحاول إعادة الاتصال لاحقاً بدلاً من قتل الحساب للأبد
+            # الجلسة معطلة أو الرقم محظور نهائياً - نقوم بتعطيله في قاعدة البيانات فوراً لمنع تعليق النظام
             logger.warning(
-                f"[Checker ID: {account.get('id')}] الجلسة غير مصرح بها - "
-                f"تطبيق توقف مؤقت 300 ثانية بدلاً من التعطيل الدائم"
+                f"[Checker ID: {account.get('id')}] الجلسة غير مصرح بها. تعطيل الحساب في قاعدة البيانات."
             )
-            await flood_manager.set_flood(account["id"], seconds=300)
+            await account_manager.disable_account(account["id"])
             try:
                 await telegram_client_manager.disconnect_client(account["id"])
             except Exception:
@@ -43,12 +42,25 @@ class TelegramChecker:
             return {
                 "status": "SESSION_EXPIRED",
                 "phone": phone,
-                "status_text": "⚠️ جلسة الفاحص منتهية - إعادة محاولة بعد 5 دقائق"
+                "status_text": "⚠️ جلسة الفاحص منتهية - تم تعطيل الحساب تلقائياً"
             }
+        except Exception as e:
+            # خطأ اتصال أو استثناء غير متوقع، نقوم بفصل الكائن لتهيئة الاتصال في المرة القادمة
+            try:
+                await telegram_client_manager.disconnect_client(account["id"])
+            except Exception:
+                pass
+            return {
+                "status": "ERROR",
+                "error": str(e),
+                "phone": phone,
+                "status_text": "⚪️ غير معروف / معلق"
+            }
+
         try:
-            # محاولة إرسال طلب الكود للرقم لمعرفة حالته وجلسته فوراً
+            # محاولة إرسال طلب الكود للرقم لمعرفة حالته وجلسته فوراً مع مهلة زمنية 15 ثانية
             t_send_code_start = time.perf_counter()
-            await client.send_code_request(phone)
+            await asyncio.wait_for(client.send_code_request(phone), timeout=15.0)
             t_send_code_end = time.perf_counter()
             logger.info(
                 f"[PERF_TRACE] [Checker ID: {account.get('id')}] send_code_request duration: "
@@ -103,7 +115,6 @@ class TelegramChecker:
 
     async def get_available_account(self):
         """ الحصول على أول حساب متاح للفحص. """
-        # استخدام الدالة الصحيحة بالمفرد كما هو معرف في AccountManager
         account = await account_manager.get_available_account()
             
         if not account:
@@ -126,7 +137,7 @@ class TelegramChecker:
         for phone in phones:
             account = await self.wait_for_account()
             result = await self.check_phone(account, phone)
-            if result["status"] in ["FLOOD", "ACCOUNT_DISABLED"]:
+            if result["status"] in ["FLOOD", "SESSION_EXPIRED", "ACCOUNT_DISABLED"]:
                 continue
             results.append(result)
             if callback:
@@ -154,7 +165,8 @@ class BatchChecker:
                 queue.put_nowait(phone)
                 queue.task_done()
                 break
-            elif result["status"] == "ACCOUNT_DISABLED":
+            elif result["status"] in ["SESSION_EXPIRED", "ACCOUNT_DISABLED"]:
+                # إعادة الرقم للطابور وإيقاف هذا العامل فوراً لتفادي دوران غير منتهٍ لجلسة منتهية
                 queue.put_nowait(phone)
                 queue.task_done()
                 break
@@ -180,6 +192,10 @@ class BatchChecker:
             )
             workers.append(task)
             
+        if not workers:
+            logger.warning("لا توجد حسابات فحص نشطة حالياً لبدء طابور الفحص. إلغاء المهمة.")
+            return False
+
         await queue.join()
         for _ in workers:
             await queue.put(None)
