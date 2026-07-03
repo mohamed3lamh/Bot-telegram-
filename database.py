@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import threading
 import pg8000
 from urllib.parse import urlparse
 
@@ -9,546 +10,567 @@ logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-def get_connection():
+# ==================== Connection Pool ====================
+# بدلاً من فتح اتصال TCP جديد في كل استدعاء (~1-2 ثانية)،
+# نحتفظ بـ Pool من الاتصالات الجاهزة (~0ms).
+_pool_lock = threading.Lock()
+_pool: list = []  # قائمة الاتصالات الجاهزة
+_POOL_SIZE = 5    # عدد الاتصالات الدائمة
+
+def _db_params():
+    """استخراج بارامترات الاتصال من DATABASE_URL"""
     if not DATABASE_URL:
-        logger.error("DATABASE_URL missing in environment variables!")
         raise ValueError("DATABASE_URL is not set")
+    parsed = urlparse(DATABASE_URL.strip())
+    return dict(
+        user=parsed.username,
+        password=parsed.password,
+        host=parsed.hostname,
+        port=parsed.port or 5432,
+        database=parsed.path.lstrip('/'),
+        ssl_context=True,
+    )
 
-    parsed_url = urlparse(DATABASE_URL.strip())
-    username = parsed_url.username
-    password = parsed_url.password
-    host = parsed_url.hostname
-    port = parsed_url.port if parsed_url.port else 5432
-    dbname = parsed_url.path.lstrip('/')
-
+def _make_conn():
+    """فتح اتصال جديد مع retry"""
+    params = _db_params()
     for attempt in range(5):
         try:
-            return pg8000.connect(
-                user=username,
-                password=password,
-                host=host,
-                port=port,
-                database=dbname,
-                ssl_context=True
-            )
+            conn = pg8000.connect(**params)
+            return conn
         except Exception as e:
             if attempt == 4:
-                logger.error(f"❌ فشلت كافة محاولات الاتصال بقاعدة البيانات: {e}")
+                logger.error(f"❌ فشلت كافة محاولات الاتصال: {e}")
                 raise e
-            logger.warning(f"🔄 محاولة الاتصال بقاعدة البيانات فشلت ({attempt + 1}/5)، جاري إعادة المحاولة خلال ثانيتين...")
-            time.sleep(2)
+            logger.warning(f"🔄 محاولة الاتصال فشلت ({attempt + 1}/5)، إعادة المحاولة...")
+            time.sleep(1)
+
+def _is_conn_alive(conn):
+    """التحقق من أن الاتصال لا يزال حياً بدون overhead كبير"""
+    try:
+        conn.run("SELECT 1")
+        return True
+    except Exception:
+        return False
+
+def get_connection():
+    """الحصول على اتصال من الـ Pool أو فتح اتصال جديد إذا كان الـ Pool فارغاً."""
+    while True:
+        # 1) أخذ اتصال من الـ Pool بسرعة (lock فقط على pop)
+        with _pool_lock:
+            conn = _pool.pop() if _pool else None
+
+        if conn is None:
+            # Pool فارغ — نفتح اتصالاً جديداً
+            return _PooledConnection(_make_conn())
+
+        # 2) التحقق من صلاحية الاتصال خارج الـ lock (لا نُجمّد خيوطاً أخرى)
+        try:
+            conn.run("SELECT 1")
+            return _PooledConnection(conn)
+        except Exception:
+            # اتصال منتهٍ — نتخلص منه ونحاول التالي
+            try:
+                conn.close()
+            except Exception:
+                pass
+            # نكرر الدورة للحصول على اتصال آخر أو فتح جديد
+
+def _return_to_pool(conn):
+    """إعادة الاتصال للـ Pool بعد الانتهاء منه"""
+    with _pool_lock:
+        if len(_pool) < _POOL_SIZE:
+            _pool.append(conn)
+        else:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+class _PooledConnection:
+    """
+    Wrapper يعيد الاتصال للـ Pool بدلاً من إغلاقه عند استدعاء .close()
+    يدعم context manager (with) ومتوافق 100% مع كل الكود الموجود.
+    """
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self):
+        return self._conn.cursor()
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def run(self, *args, **kwargs):
+        return self._conn.run(*args, **kwargs)
+
+    def close(self):
+        """إعادة للـ Pool بدلاً من الإغلاق الفعلي"""
+        _return_to_pool(self._conn)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+def _warm_up_pool():
+    """تسخين الـ Pool عند بدء التشغيل — يفتح الاتصالات مسبقاً"""
+    if not DATABASE_URL:
+        return
+    logger.info(f"🔌 تسخين Connection Pool ({_POOL_SIZE} اتصالات)...")
+    conns = []
+    for i in range(_POOL_SIZE):
+        try:
+            conns.append(_make_conn())
+        except Exception as e:
+            logger.warning(f"⚠️ تعذر فتح اتصال {i+1}: {e}")
+            break
+    with _pool_lock:
+        _pool.extend(conns)
+    logger.info(f"✅ Pool جاهز: {len(_pool)} اتصالات متاحة")
+
+# تسخين Pool تلقائياً عند استيراد الوحدة
+_warm_up_pool()
+
+def db_execute(query, params=None, commit=True, fetch=None):
+    """
+    Helper to execute a query safely, commit if required, and return fetched rows.
+    Ensures connection is ALWAYS returned to the pool and cursor is closed.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(query, params or ())
+            if commit:
+                conn.commit()
+            if fetch == "one":
+                return cursor.fetchone()
+            elif fetch == "all":
+                return cursor.fetchall()
+            return None
+        finally:
+            cursor.close()
 
 def init_db():
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    # تعريف دالة column_exists قبل استخدامها
-    def column_exists(table, column):
-        cursor.execute(f"SELECT COUNT(*) FROM information_schema.columns WHERE table_name='{table}' AND column_name='{column}'")
-        return cursor.fetchone()[0] > 0
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_bots (
-            user_id BIGINT PRIMARY KEY,
-            token TEXT UNIQUE NOT NULL,
-            is_active INTEGER DEFAULT 0,
-            expires_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP + INTERVAL '30 days',
-            is_banned INTEGER DEFAULT 0
-        )
-    ''')
-    conn.commit()
-
-    # إضافة عمود plan_type إذا لم يكن موجوداً (مع المسافة البادئة الصحيحة)
-    if not column_exists('user_bots', 'plan_type'):
-        cursor.execute("ALTER TABLE user_bots ADD COLUMN plan_type TEXT DEFAULT '1'")
-        conn.commit()
-
-    if not column_exists('user_bots', 'expires_at'):
-        cursor.execute("ALTER TABLE user_bots ADD COLUMN expires_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP + INTERVAL '30 days'")
-        conn.commit()
-    if not column_exists('user_bots', 'is_banned'):
-        cursor.execute("ALTER TABLE user_bots ADD COLUMN is_banned INTEGER DEFAULT 0")
-        conn.commit()
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_hunting_channels (
-            user_id BIGINT PRIMARY KEY,
-            channel_id TEXT NOT NULL
-        )
-    ''')
-    conn.commit()
-    conn.commit()
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_hunting_status (
-            user_id BIGINT PRIMARY KEY,
-            is_hunting INTEGER DEFAULT 0
-        )
-    ''')
-    conn.commit()
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_countries (
-            user_id BIGINT,
-            country_name TEXT,
-            PRIMARY KEY (user_id, country_name)
-        )
-    ''')
-    conn.commit()
-
-    # إضافة أعمدة الإعدادات إذا لم تكن موجودة
-    if not column_exists('user_countries', 'number_type'):
-        cursor.execute("ALTER TABLE user_countries ADD COLUMN number_type TEXT DEFAULT 'all'")
-        conn.commit()
-    if not column_exists('user_countries', 'session_status'):
-        cursor.execute("ALTER TABLE user_countries ADD COLUMN session_status TEXT DEFAULT 'all'")
-        conn.commit()
-        
-    # --- ترقية جدول حسابات الموقع إلى V2 (متعدد) ---
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_site_accounts_v2 (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            username TEXT NOT NULL,
-            api_key TEXT NOT NULL,
-            is_active BOOLEAN DEFAULT FALSE,
-            UNIQUE(user_id, username)
-        )
-    """)
-    conn.commit()
-
-    # نقل البيانات القديمة إذا كان الجدول القديم موجوداً ولم تتم ترقيته
-    if not column_exists('user_site_accounts_v2', 'is_active') and column_exists('user_site_accounts', 'username') and not column_exists('user_site_accounts', 'id'):
-        logger.info("Migrating old user_site_accounts to v2...")
+    with get_connection() as conn:
+        cursor = conn.cursor()
         try:
+            # تعريف دالة column_exists قبل استخدامها
+            def column_exists(table, column):
+                cursor.execute(f"SELECT COUNT(*) FROM information_schema.columns WHERE table_name='{table}' AND column_name='{column}'")
+                return cursor.fetchone()[0] > 0
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_bots (
+                    user_id BIGINT PRIMARY KEY,
+                    token TEXT UNIQUE NOT NULL,
+                    is_active INTEGER DEFAULT 0,
+                    expires_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP + INTERVAL '30 days',
+                    is_banned INTEGER DEFAULT 0
+                )
+            ''')
+            conn.commit()
+
+            # إضافة عمود plan_type إذا لم يكن موجوداً (مع المسافة البادئة الصحيحة)
+            if not column_exists('user_bots', 'plan_type'):
+                cursor.execute("ALTER TABLE user_bots ADD COLUMN plan_type TEXT DEFAULT '1'")
+                conn.commit()
+
+            if not column_exists('user_bots', 'expires_at'):
+                cursor.execute("ALTER TABLE user_bots ADD COLUMN expires_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP + INTERVAL '30 days'")
+                conn.commit()
+            if not column_exists('user_bots', 'is_banned'):
+                cursor.execute("ALTER TABLE user_bots ADD COLUMN is_banned INTEGER DEFAULT 0")
+                conn.commit()
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_hunting_channels (
+                    user_id BIGINT PRIMARY KEY,
+                    channel_id TEXT NOT NULL
+                )
+            ''')
+            conn.commit()
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_hunting_status (
+                    user_id BIGINT PRIMARY KEY,
+                    is_hunting INTEGER DEFAULT 0
+                )
+            ''')
+            conn.commit()
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_countries (
+                    user_id BIGINT,
+                    country_name TEXT,
+                    PRIMARY KEY (user_id, country_name)
+                )
+            ''')
+            conn.commit()
+
+            # إضافة أعمدة الإعدادات إذا لم تكن موجودة
+            if not column_exists('user_countries', 'number_type'):
+                cursor.execute("ALTER TABLE user_countries ADD COLUMN number_type TEXT DEFAULT 'all'")
+                conn.commit()
+            if not column_exists('user_countries', 'session_status'):
+                cursor.execute("ALTER TABLE user_countries ADD COLUMN session_status TEXT DEFAULT 'all'")
+                conn.commit()
+                
+            # --- ترقية جدول حسابات الموقع إلى V2 (متعدد) ---
             cursor.execute("""
-                INSERT INTO user_site_accounts_v2 (user_id, username, api_key, is_active)
-                SELECT user_id, username, api_key, TRUE
-                FROM user_site_accounts
-                ON CONFLICT (user_id, username) DO NOTHING
+                CREATE TABLE IF NOT EXISTS user_site_accounts_v2 (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    username TEXT NOT NULL,
+                    api_key TEXT NOT NULL,
+                    is_active BOOLEAN DEFAULT FALSE,
+                    UNIQUE(user_id, username)
+                )
             """)
             conn.commit()
-            cursor.execute("DROP TABLE user_site_accounts")
+
+            # نقل البيانات القديمة إذا كان الجدول القديم موجوداً ولم تتم ترقيته
+            if not column_exists('user_site_accounts_v2', 'is_active') and column_exists('user_site_accounts', 'username') and not column_exists('user_site_accounts', 'id'):
+                logger.info("Migrating old user_site_accounts to v2...")
+                try:
+                    cursor.execute("""
+                        INSERT INTO user_site_accounts_v2 (user_id, username, api_key, is_active)
+                        SELECT user_id, username, api_key, TRUE
+                        FROM user_site_accounts
+                        ON CONFLICT (user_id, username) DO NOTHING
+                    """)
+                    conn.commit()
+                    cursor.execute("DROP TABLE user_site_accounts")
+                    conn.commit()
+                except Exception as e:
+                    logger.warning(f"Migration error: {e}")
+                    conn.rollback()
+
+            # إعادة تسمية v2 إلى الاسم الأصلي
+            if column_exists('user_site_accounts_v2', 'is_active'):
+                cursor.execute("DROP TABLE IF EXISTS user_site_accounts")
+                conn.commit()
+                cursor.execute("ALTER TABLE user_site_accounts_v2 RENAME TO user_site_accounts")
+                conn.commit()
+                logger.info("Renamed user_site_accounts_v2 to user_site_accounts")
+            else:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS user_site_accounts (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        username TEXT NOT NULL,
+                        api_key TEXT NOT NULL,
+                        is_active BOOLEAN DEFAULT FALSE,
+                        UNIQUE(user_id, username)
+                    )
+                """)
+                conn.commit()
+
+            # جدول حسابات الفحص
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS telegram_accounts (
+                    id SERIAL PRIMARY KEY,
+                    phone TEXT UNIQUE NOT NULL,
+                    api_id INTEGER NOT NULL,
+                    api_hash TEXT NOT NULL,
+                    string_session TEXT NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    flood_until TIMESTAMP NULL,
+                    total_checks INTEGER DEFAULT 0,
+                    last_used TIMESTAMP NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             conn.commit()
-        except Exception as e:
-            logger.warning(f"Migration error: {e}")
-            conn.rollback()
 
-    # إعادة تسمية v2 إلى الاسم الأصلي
-    if column_exists('user_site_accounts_v2', 'is_active'):
-        cursor.execute("DROP TABLE IF EXISTS user_site_accounts")
-        conn.commit()
-        cursor.execute("ALTER TABLE user_site_accounts_v2 RENAME TO user_site_accounts")
-        conn.commit()
-        logger.info("Renamed user_site_accounts_v2 to user_site_accounts")
-    else:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS user_site_accounts (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                username TEXT NOT NULL,
-                api_key TEXT NOT NULL,
-                is_active BOOLEAN DEFAULT FALSE,
-                UNIQUE(user_id, username)
-            )
-        """)
-        conn.commit()
+            if not column_exists('telegram_accounts', 'is_active'):
+                cursor.execute("ALTER TABLE telegram_accounts ADD COLUMN is_active BOOLEAN DEFAULT TRUE")
+                conn.commit()
+            if column_exists('telegram_accounts', 'status'):
+                try:
+                    cursor.execute("ALTER TABLE telegram_accounts DROP COLUMN status")
+                    conn.commit()
+                except:
+                    pass
 
-    # جدول حسابات الفحص
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS telegram_accounts (
-            id SERIAL PRIMARY KEY,
-            phone TEXT UNIQUE NOT NULL,
-            api_id INTEGER NOT NULL,
-            api_hash TEXT NOT NULL,
-            string_session TEXT NOT NULL,
-            is_active BOOLEAN DEFAULT TRUE,
-            flood_until TIMESTAMP NULL,
-            total_checks INTEGER DEFAULT 0,
-            last_used TIMESTAMP NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-
-    if not column_exists('telegram_accounts', 'is_active'):
-        cursor.execute("ALTER TABLE telegram_accounts ADD COLUMN is_active BOOLEAN DEFAULT TRUE")
-        conn.commit()
-    if column_exists('telegram_accounts', 'status'):
-        try:
-            cursor.execute("ALTER TABLE telegram_accounts DROP COLUMN status")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS activity_log (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    action TEXT NOT NULL,
+                    details TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             conn.commit()
-        except:
-            pass
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS activity_log (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT,
-            action TEXT NOT NULL,
-            details TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
+            # ---------- تذاكر الدعم ----------
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS support_tickets (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    subject TEXT DEFAULT 'دعم',
+                    message TEXT NOT NULL,
+                    status TEXT DEFAULT 'open',
+                    admin_reply TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
 
-    # ---------- تذاكر الدعم ----------
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS support_tickets (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            subject TEXT DEFAULT 'دعم',
-            message TEXT NOT NULL,
-            status TEXT DEFAULT 'open',
-            admin_reply TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
+            # ---------- إعدادات الأسعار والمحافظ ----------
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            conn.commit()
 
-    # ---------- إعدادات الأسعار والمحافظ ----------
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        )
-    """)
-    conn.commit()
+            # إدخال القيم الافتراضية للإعدادات إذا لم تكن موجودة
+            defaults = {
+                'plan_price_1': '4',
+                'plan_price_2': '6',
+                'plan_price_3': '8',
+                'usdt_wallet': 'TYourUSDTAddressHere',
+                'trx_wallet': 'TSDqje1oWAcDY8Q5XzUDLWksWMSPqxv3PB',
+                'usdt_rate': '1',   # 1 USDT = 1 USD
+                'trx_rate': '0.16'   # 1 TRX = 0.16 USD (مثال، يحدد السعر)
+            }
+            for k, v in defaults.items():
+                cursor.execute("""
+                    INSERT INTO settings (key, value) VALUES (%s, %s)
+                    ON CONFLICT (key) DO NOTHING
+                """, (k, v))
+            conn.commit()
 
-    # إدخال القيم الافتراضية للإعدادات إذا لم تكن موجودة
-    defaults = {
-        'plan_price_1': '4',
-        'plan_price_2': '6',
-        'plan_price_3': '8',
-        'usdt_wallet': 'TYourUSDTAddressHere',
-        'trx_wallet': 'TSDqje1oWAcDY8Q5XzUDLWksWMSPqxv3PB',
-        'usdt_rate': '1',   # 1 USDT = 1 USD
-        'trx_rate': '0.16'   # 1 TRX = 0.16 USD (مثال، يحدد السعر)
-    }
-    for k, v in defaults.items():
-        cursor.execute("""
-            INSERT INTO settings (key, value) VALUES (%s, %s)
-            ON CONFLICT (key) DO NOTHING
-        """, (k, v))
-    conn.commit()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pending_subscriptions (
-            user_id BIGINT PRIMARY KEY,
-            plan TEXT NOT NULL,
-            payment_method TEXT NOT NULL,
-            amount_crypto TEXT NOT NULL,
-            wallet_address TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    
-    cursor.close()
-    conn.close()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pending_subscriptions (
+                    user_id BIGINT PRIMARY KEY,
+                    plan TEXT NOT NULL,
+                    payment_method TEXT NOT NULL,
+                    amount_crypto TEXT NOT NULL,
+                    wallet_address TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+        finally:
+            cursor.close()
 
 # --- دوال حسابات DurianRCS (متعددة) ---
 def save_site_account_v2(user_id, username, api_key):
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        # حد الحسابات بناءً على الخطة
-        plan = get_user_plan(user_id)
-        max_accounts = int(plan)
-        cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s", (user_id,))
-        count = cursor.fetchone()[0]
-        if count >= max_accounts:
-            raise Exception("MAX_ACCOUNTS_REACHED")
-        cursor.execute("""
-            INSERT INTO user_site_accounts (user_id, username, api_key, is_active)
-            VALUES (%s, %s, %s, TRUE)
-            ON CONFLICT (user_id, username) DO UPDATE SET api_key = EXCLUDED.api_key, is_active = TRUE
-        """, (user_id, username, api_key))
-        conn.commit()
-    finally:
-        cursor.close()
-        conn.close()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            # حد الحسابات بناءً على الخطة
+            plan = get_user_plan(user_id)
+            max_accounts = int(plan)
+            cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s", (user_id,))
+            count = cursor.fetchone()[0]
+            if count >= max_accounts:
+                raise Exception("MAX_ACCOUNTS_REACHED")
+            cursor.execute("""
+                INSERT INTO user_site_accounts (user_id, username, api_key, is_active)
+                VALUES (%s, %s, %s, TRUE)
+                ON CONFLICT (user_id, username) DO UPDATE SET api_key = EXCLUDED.api_key, is_active = TRUE
+            """, (user_id, username, api_key))
+            conn.commit()
+        finally:
+            cursor.close()
 
 def get_all_site_accounts(user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT id, username, api_key, is_active FROM user_site_accounts WHERE user_id = %s ORDER BY id", (user_id,))
-        rows = cursor.fetchall()
-        return rows
-    finally:
-        cursor.close()
-        conn.close()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT id, username, api_key, is_active FROM user_site_accounts WHERE user_id = %s ORDER BY id", (user_id,))
+            rows = cursor.fetchall()
+            return rows
+        finally:
+            cursor.close()
 
 def toggle_site_account(user_id, account_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT is_active FROM user_site_accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
-        row = cursor.fetchone()
-        if not row:
-            return
-        current_status = row[0]
-        if not current_status:  # سيُفعّل الآن
-            plan = get_user_plan(user_id)
-            max_active = int(plan)
-            cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
-            active_count = cursor.fetchone()[0]
-            if active_count >= max_active:
-                raise Exception("MAX_ACTIVE_REACHED")
-        cursor.execute("""
-            UPDATE user_site_accounts
-            SET is_active = NOT is_active
-            WHERE id = %s AND user_id = %s
-        """, (account_id, user_id))
-        conn.commit()
-    finally:
-        cursor.close()
-        conn.close()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT is_active FROM user_site_accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
+            row = cursor.fetchone()
+            if not row:
+                return
+            current_status = row[0]
+            if not current_status:  # سيُفعّل الآن
+                plan = get_user_plan(user_id)
+                max_active = int(plan)
+                cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
+                active_count = cursor.fetchone()[0]
+                if active_count >= max_active:
+                    raise Exception("MAX_ACTIVE_REACHED")
+            cursor.execute("""
+                UPDATE user_site_accounts
+                SET is_active = NOT is_active
+                WHERE id = %s AND user_id = %s
+            """, (account_id, user_id))
+            conn.commit()
+        finally:
+            cursor.close()
 
 def delete_site_account(user_id, account_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("DELETE FROM user_site_accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
-        cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
-        if cursor.fetchone()[0] == 0:
-            cursor.execute("UPDATE user_site_accounts SET is_active = TRUE WHERE id = (SELECT id FROM user_site_accounts WHERE user_id = %s LIMIT 1)", (user_id,))
-        conn.commit()
-    finally:
-        cursor.close()
-        conn.close()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DELETE FROM user_site_accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
+            cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("UPDATE user_site_accounts SET is_active = TRUE WHERE id = (SELECT id FROM user_site_accounts WHERE user_id = %s LIMIT 1)", (user_id,))
+            conn.commit()
+        finally:
+            cursor.close()
 
 def get_site_account(user_id):
     """الحساب النشط فقط"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT username, api_key FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE LIMIT 1", (user_id,))
-        row = cursor.fetchone()
-        return row
-    finally:
-        cursor.close()
-        conn.close()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT username, api_key FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE LIMIT 1", (user_id,))
+            row = cursor.fetchone()
+            return row
+        finally:
+            cursor.close()
 
 def get_active_site_accounts(user_id):
     """استرجاع جميع حسابات الموقع النشطة للمستخدم"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "SELECT username, api_key FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE",
-            (user_id,)
-        )
-        rows = cursor.fetchall()
-        return rows  # list of (username, api_key)
-    finally:
-        cursor.close()
-        conn.close()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT username, api_key FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE",
+                (user_id,)
+            )
+            rows = cursor.fetchall()
+            return rows  # list of (username, api_key)
+        finally:
+            cursor.close()
 
 # --- باقي الدوال (موجودة مسبقاً) ---
 def save_bot(user_id, token):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
+    db_execute('''
         INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned) 
         VALUES (%s, %s, 0, CURRENT_TIMESTAMP + INTERVAL '30 days', 0)
         ON CONFLICT (user_id) 
         DO UPDATE SET token = EXCLUDED.token;
     ''', (user_id, token))
-    conn.commit()
-    cursor.close()
-    conn.close()
 
 def add_days_to_user(user_id, days, plan_type=None):
-    conn = get_connection()
-    cursor = conn.cursor()
-    # هل يوجد سجل للمستخدم؟
-    cursor.execute('SELECT token FROM user_bots WHERE user_id = %s', (user_id,))
-    row = cursor.fetchone()
+    row = db_execute('SELECT token FROM user_bots WHERE user_id = %s', (user_id,), commit=False, fetch='one')
     if row:
-        # تحديث مستخدم موجود
         if plan_type:
-            cursor.execute('''
+            db_execute('''
                 UPDATE user_bots
                 SET expires_at = GREATEST(expires_at, CURRENT_TIMESTAMP) + CAST(%s AS INTERVAL),
                     plan_type = %s
                 WHERE user_id = %s
             ''', (f"{days} days", plan_type, user_id))
         else:
-            cursor.execute('''
+            db_execute('''
                 UPDATE user_bots
                 SET expires_at = GREATEST(expires_at, CURRENT_TIMESTAMP) + CAST(%s AS INTERVAL)
                 WHERE user_id = %s
             ''', (f"{days} days", user_id))
     else:
-        # إنشاء سجل جديد مع توكن مؤقت فريد
         temp_token = f'pending_{user_id}'
         if plan_type:
-            cursor.execute('''
+            db_execute('''
                 INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned, plan_type)
                 VALUES (%s, %s, 0, CURRENT_TIMESTAMP + CAST(%s AS INTERVAL), 0, %s)
             ''', (user_id, temp_token, f"{days} days", plan_type))
         else:
-            cursor.execute('''
+            db_execute('''
                 INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned)
                 VALUES (%s, %s, 0, CURRENT_TIMESTAMP + CAST(%s AS INTERVAL), 0)
             ''', (user_id, temp_token, f"{days} days"))
-    conn.commit()
-    cursor.close()
-    conn.close()
 
 def get_user_plan(user_id):
     """جلب نوع خطة المستخدم (1, 2, 3)"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT plan_type FROM user_bots WHERE user_id = %s", (user_id,))
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return row[0] if row else '1'
+    try:
+        row = db_execute("SELECT plan_type FROM user_bots WHERE user_id = %s", (user_id,), commit=False, fetch='one')
+        return row[0] if row else '1'
+    except Exception:
+        return '1'
 
 def ban_user(user_id, status):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('UPDATE user_bots SET is_banned = %s WHERE user_id = %s', (status, user_id))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    db_execute('UPDATE user_bots SET is_banned = %s WHERE user_id = %s', (status, user_id))
 
 def set_status(user_id, is_active):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('UPDATE user_bots SET is_active = %s WHERE user_id = %s', (is_active, user_id))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    db_execute('UPDATE user_bots SET is_active = %s WHERE user_id = %s', (is_active, user_id))
 
 def get_bot(user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
     try:
-        cursor.execute('SELECT token, is_active, expires_at, is_banned FROM user_bots WHERE user_id = %s', (user_id,))
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        return row
+        return db_execute('SELECT token, is_active, expires_at, is_banned FROM user_bots WHERE user_id = %s', (user_id,), commit=False, fetch='one')
     except Exception:
-        cursor.close()
-        conn.close()
         return None
 
 def get_all_active_bots():
-    conn = get_connection()
-    cursor = conn.cursor()
     try:
-        cursor.execute('SELECT user_id, token FROM user_bots WHERE is_active = 1 AND is_banned = 0')
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        return rows
+        return db_execute('SELECT user_id, token FROM user_bots WHERE is_active = 1 AND is_banned = 0', commit=False, fetch='all')
     except Exception:
-        cursor.close()
-        conn.close()
         return []
 
 def get_stats():
-    conn = get_connection()
-    cursor = conn.cursor()
     try:
-        cursor.execute('SELECT COUNT(*) FROM user_bots')
-        total = cursor.fetchone()[0]
-        cursor.execute('SELECT COUNT(*) FROM user_bots WHERE is_active = 1')
-        active = cursor.fetchone()[0]
-        cursor.close()
-        conn.close()
-        return total if total else 0, active if active else 0
+        total = db_execute('SELECT COUNT(*) FROM user_bots', commit=False, fetch='one')
+        active = db_execute('SELECT COUNT(*) FROM user_bots WHERE is_active = 1', commit=False, fetch='one')
+        return (total[0] if total else 0), (active[0] if active else 0)
     except Exception:
-        cursor.close()
-        conn.close()
         return 0, 0
 
 def save_hunting_channel(user_id, channel_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
+    db_execute('''
         INSERT INTO user_hunting_channels (user_id, channel_id)
         VALUES (%s, %s)
         ON CONFLICT (user_id)
         DO UPDATE SET channel_id = EXCLUDED.channel_id;
     ''', (user_id, str(channel_id)))
-    conn.commit()
-    cursor.close()
-    conn.close()
 
 def get_hunting_channel(user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
     try:
-        cursor.execute(
-            'SELECT channel_id FROM user_hunting_channels WHERE user_id = %s',
-            (user_id,)
-        )
-        row = cursor.fetchone()
+        row = db_execute('SELECT channel_id FROM user_hunting_channels WHERE user_id = %s', (user_id,), commit=False, fetch='one')
         return row[0] if row else None
-    finally:
-        cursor.close()
-        conn.close()
+    except Exception:
+        return None
 
 def set_hunting_status(user_id, is_hunting):
     status_val = 1 if is_hunting else 0
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
+    db_execute('''
         INSERT INTO user_hunting_status (user_id, is_hunting)
         VALUES (%s, %s)
         ON CONFLICT (user_id) DO UPDATE SET is_hunting = EXCLUDED.is_hunting
     ''', (user_id, status_val))
-    conn.commit()
-    cursor.close()
-    conn.close()
 
 def get_user_countries(user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
     try:
-        cursor.execute('SELECT country_name FROM user_countries WHERE user_id = %s', (user_id,))
-        rows = cursor.fetchall()
+        rows = db_execute('SELECT country_name FROM user_countries WHERE user_id = %s', (user_id,), commit=False, fetch='all')
         return [row[0] for row in rows] if rows else []
-    finally:
-        cursor.close()
-        conn.close()
+    except Exception:
+        return []
 
 def add_user_country(user_id, country_name):
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute('''
-            INSERT INTO user_countries (user_id, country_name)
-            VALUES (%s, %s)
-            ON CONFLICT (user_id, country_name) DO NOTHING
-        ''', (user_id, country_name))
-        conn.commit()
-    finally:
-        cursor.close()
-        conn.close()
+    db_execute('''
+        INSERT INTO user_countries (user_id, country_name)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id, country_name) DO NOTHING
+    ''', (user_id, country_name))
 
 def delete_user_country(user_id, country_name):
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("DELETE FROM user_countries WHERE user_id = %s AND country_name = %s", (user_id, country_name))
-        conn.commit()
-    finally:
-        cursor.close()
-        conn.close()
+    db_execute("DELETE FROM user_countries WHERE user_id = %s AND country_name = %s", (user_id, country_name))
 
 # ---------- نظام الاشتراكات المعلقة ----------
 def add_pending_subscription(user_id, plan, payment_method, amount_crypto, wallet_address):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    db_execute("""
         INSERT INTO pending_subscriptions (user_id, plan, payment_method, amount_crypto, wallet_address)
         VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (user_id) DO UPDATE SET
@@ -558,77 +580,34 @@ def add_pending_subscription(user_id, plan, payment_method, amount_crypto, walle
             wallet_address = EXCLUDED.wallet_address,
             created_at = CURRENT_TIMESTAMP
     """, (user_id, plan, payment_method, amount_crypto, wallet_address))
-    conn.commit()
-    cursor.close()
-    conn.close()
 
 def get_pending_subscription(user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT plan, payment_method, amount_crypto, wallet_address, created_at FROM pending_subscriptions WHERE user_id = %s", (user_id,))
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return row
+    return db_execute("SELECT plan, payment_method, amount_crypto, wallet_address, created_at FROM pending_subscriptions WHERE user_id = %s", (user_id,), commit=False, fetch='one')
 
 def delete_pending_subscription(user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM pending_subscriptions WHERE user_id = %s", (user_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    db_execute("DELETE FROM pending_subscriptions WHERE user_id = %s", (user_id,))
 
 def get_all_pending_subscriptions():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id, plan, payment_method, amount_crypto, wallet_address, created_at FROM pending_subscriptions ORDER BY created_at DESC")
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
+    return db_execute("SELECT user_id, plan, payment_method, amount_crypto, wallet_address, created_at FROM pending_subscriptions ORDER BY created_at DESC", commit=False, fetch='all')
 
 def get_all_checkers():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, phone, is_active FROM telegram_accounts ORDER BY id")
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
+    return db_execute("SELECT id, phone, is_active FROM telegram_accounts ORDER BY id", commit=False, fetch='all')
 
 def delete_checker(account_id):
-    """حذف حساب فاحص نهائيًا من قاعدة البيانات"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM telegram_accounts WHERE id = %s", (account_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    db_execute("DELETE FROM telegram_accounts WHERE id = %s", (account_id,))
 
 def toggle_checker(account_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE telegram_accounts SET is_active = NOT is_active WHERE id = %s", (account_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    db_execute("UPDATE telegram_accounts SET is_active = NOT is_active WHERE id = %s", (account_id,))
 
 def get_account_flood(account_id):
-    conn = get_connection()
-    cursor = conn.cursor()
     try:
-        cursor.execute("SELECT flood_until FROM telegram_accounts WHERE id=%s", (account_id,))
-        row = cursor.fetchone()
+        row = db_execute("SELECT flood_until FROM telegram_accounts WHERE id=%s", (account_id,), commit=False, fetch='one')
         return row[0] if row else None
-    finally:
-        cursor.close()
-        conn.close()
+    except Exception:
+        return None
 
 def save_telegram_account(phone, api_id, api_hash, string_session):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    db_execute("""
         INSERT INTO telegram_accounts (phone, api_id, api_hash, string_session)
         VALUES (%s,%s,%s,%s)
         ON CONFLICT (phone) DO UPDATE SET
@@ -637,188 +616,86 @@ def save_telegram_account(phone, api_id, api_hash, string_session):
             string_session=EXCLUDED.string_session,
             is_active = TRUE
     """, (phone, api_id, api_hash, string_session))
-    conn.commit()
-    cursor.close()
-    conn.close()
 
 def get_telegram_accounts():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    return db_execute("""
         SELECT id, phone, api_id, api_hash, string_session, is_active,
                flood_until, total_checks, last_used
         FROM telegram_accounts
         ORDER BY id
-    """)
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
+    """, commit=False, fetch='all')
 
 def delete_telegram_account(account_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM telegram_accounts WHERE id=%s", (account_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    db_execute("DELETE FROM telegram_accounts WHERE id=%s", (account_id,))
 
 def set_account_flood(account_id, flood_until):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE telegram_accounts SET flood_until=%s WHERE id=%s", (flood_until, account_id))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    db_execute("UPDATE telegram_accounts SET flood_until=%s WHERE id=%s", (flood_until, account_id))
 
 def increase_account_checks(account_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    db_execute("""
         UPDATE telegram_accounts SET
             total_checks = total_checks + 1,
             last_used = CURRENT_TIMESTAMP
         WHERE id = %s
     """, (account_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
 
 def get_best_telegram_account():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    return db_execute("""
         SELECT id, phone, api_id, api_hash, string_session
         FROM telegram_accounts
         WHERE is_active = TRUE
           AND (flood_until IS NULL OR flood_until < CURRENT_TIMESTAMP)
         ORDER BY total_checks ASC, last_used ASC NULLS FIRST
         LIMIT 1
-    """)
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return row
+    """, commit=False, fetch='one')
 
 # ---------- سجل العمليات ----------
 def log_activity(user_id, action, details=""):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO activity_log (user_id, action, details) VALUES (%s, %s, %s)",
-                   (user_id, action, details))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    db_execute("INSERT INTO activity_log (user_id, action, details) VALUES (%s, %s, %s)", (user_id, action, details))
 
 def get_recent_activities(limit=50):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, user_id, action, details, created_at FROM activity_log ORDER BY created_at DESC LIMIT %s", (limit,))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
+    return db_execute("SELECT id, user_id, action, details, created_at FROM activity_log ORDER BY created_at DESC LIMIT %s", (limit,), commit=False, fetch='all')
 
 # ---------- تذاكر الدعم ----------
 def create_ticket(user_id, subject, message):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO support_tickets (user_id, subject, message) VALUES (%s, %s, %s)",
-                   (user_id, subject, message))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    db_execute("INSERT INTO support_tickets (user_id, subject, message) VALUES (%s, %s, %s)", (user_id, subject, message))
 
 def get_open_tickets():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, user_id, subject, message, status, admin_reply, created_at FROM support_tickets WHERE status='open' ORDER BY created_at DESC")
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
+    return db_execute("SELECT id, user_id, subject, message, status, admin_reply, created_at FROM support_tickets WHERE status='open' ORDER BY created_at DESC", commit=False, fetch='all')
 
 def get_all_tickets():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, user_id, subject, message, status, admin_reply, created_at FROM support_tickets ORDER BY created_at DESC")
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
+    return db_execute("SELECT id, user_id, subject, message, status, admin_reply, created_at FROM support_tickets ORDER BY created_at DESC", commit=False, fetch='all')
 
 def reply_ticket(ticket_id, reply_text):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE support_tickets SET admin_reply = %s, status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                   (reply_text, ticket_id))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    db_execute("UPDATE support_tickets SET admin_reply = %s, status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = %s", (reply_text, ticket_id))
 
 def close_ticket(ticket_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE support_tickets SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = %s", (ticket_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    db_execute("UPDATE support_tickets SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = %s", (ticket_id,))
 
 # ---------- الإعدادات ----------
 def get_setting(key, default=None):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM settings WHERE key = %s", (key,))
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    row = db_execute("SELECT value FROM settings WHERE key = %s", (key,), commit=False, fetch='one')
     if row:
         return row[0]
     return default
 
 def set_setting(key, value):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    db_execute("""
         INSERT INTO settings (key, value) VALUES (%s, %s)
         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
     """, (key, str(value)))
-    conn.commit()
-    cursor.close()
-    conn.close()
 
 def get_all_settings():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT key, value FROM settings ORDER BY key")
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
+    return db_execute("SELECT key, value FROM settings ORDER BY key", commit=False, fetch='all')
 
 def update_country_settings(user_id, country_code, number_type=None, session_status=None):
-    """تحديث إعدادات دولة معينة"""
-    conn = get_connection()
-    cursor = conn.cursor()
     if number_type is not None:
-        cursor.execute("UPDATE user_countries SET number_type = %s WHERE user_id = %s AND country_name = %s",
-                       (number_type, user_id, country_code))
+        db_execute("UPDATE user_countries SET number_type = %s WHERE user_id = %s AND country_name = %s", (number_type, user_id, country_code))
     if session_status is not None:
-        cursor.execute("UPDATE user_countries SET session_status = %s WHERE user_id = %s AND country_name = %s",
-                       (session_status, user_id, country_code))
-    conn.commit()
-    cursor.close()
-    conn.close()
+        db_execute("UPDATE user_countries SET session_status = %s WHERE user_id = %s AND country_name = %s", (session_status, user_id, country_code))
 
 def get_country_settings(user_id, country_code):
-    """جلب إعدادات دولة معينة"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT number_type, session_status FROM user_countries WHERE user_id = %s AND country_name = %s",
-                   (user_id, country_code))
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    row = db_execute("SELECT number_type, session_status FROM user_countries WHERE user_id = %s AND country_name = %s", (user_id, country_code), commit=False, fetch='one')
     if row:
         return {"number_type": row[0] or "all", "session_status": row[1] or "all"}
     return {"number_type": "all", "session_status": "all"}

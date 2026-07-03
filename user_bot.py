@@ -3,6 +3,7 @@ import logging
 import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, CallbackContext
+from telegram.request import HTTPXRequest
 from telegram.constants import ParseMode
 import database as db
 from durian_api import DurianAPI
@@ -513,17 +514,21 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         # استخدام مالك البوت للبحث عن الحساب
         owner_id = user_id
         try:
-            conn = db.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT user_id FROM user_bots WHERE token = %s", (context.bot.token,))
-            row = cursor.fetchone()
-            if row:
-                owner_id = row[0]
-            cursor.close()
-            conn.close()
+            def _get_owner_id():
+                with db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute("SELECT user_id FROM user_bots WHERE token = %s", (context.bot.token,))
+                        row = cursor.fetchone()
+                        return row[0] if row else None
+                    finally:
+                        cursor.close()
+            fetched_owner = await asyncio.to_thread(_get_owner_id)
+            if fetched_owner:
+                owner_id = fetched_owner
         except Exception as e:
             logger.error(f"Error querying bot owner by token: {e}")
-        accounts = db.get_all_site_accounts(owner_id)
+        accounts = await asyncio.to_thread(db.get_all_site_accounts, owner_id)
         api_key = None
         for acc_id, acc_username, acc_api_key, _ in accounts:
             if acc_username == username:
@@ -884,7 +889,20 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     await asyncio.gather(*tasks)
 
 def create_user_app(token: str):
-    app = Application.builder().token(token).build()
+    request_config = HTTPXRequest(
+        connect_timeout=10.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=5.0,
+        connection_pool_size=8,  # اتصالات HTTP دائمة
+    )
+    app = (
+        Application.builder()
+        .token(token)
+        .request(request_config)
+        .concurrent_updates(True)  # معالجة متوازية لطلبات الأزرار
+        .build()
+    )
     app.add_handler(CommandHandler("start", start_user_bot))
     app.add_handler(CallbackQueryHandler(user_bot_callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_inputs))
