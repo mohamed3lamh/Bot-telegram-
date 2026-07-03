@@ -698,23 +698,16 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     user_id = job.user_id
     
-    t_db1_start = time.perf_counter()
-    active_accounts = db.get_active_site_accounts(user_id)
-    t_db1_end = time.perf_counter()
-    
-    t_db2_start = time.perf_counter()
-    channel = db.get_hunting_channel(user_id)
-    t_db2_end = time.perf_counter()
-    
-    t_db3_start = time.perf_counter()
-    countries = db.get_user_countries(user_id)
-    t_db3_end = time.perf_counter()
+    t_db_start = time.perf_counter()
+    active_accounts, channel, countries = await asyncio.gather(
+        asyncio.to_thread(db.get_active_site_accounts, user_id),
+        asyncio.to_thread(db.get_hunting_channel, user_id),
+        asyncio.to_thread(db.get_user_countries, user_id)
+    )
+    t_db_end = time.perf_counter()
     
     logger.info(
-        f"[PERF_TRACE] [User: {user_id}] Initial DB calls duration: "
-        f"get_active_site_accounts={t_db1_end - t_db1_start:.4f}s, "
-        f"get_hunting_channel={t_db2_end - t_db2_start:.4f}s, "
-        f"get_user_countries={t_db3_end - t_db3_start:.4f}s"
+        f"[PERF_TRACE] [User: {user_id}] Concurrent DB calls duration: {t_db_end - t_db_start:.4f}s"
     )
 
     if not active_accounts or not channel or not countries:
