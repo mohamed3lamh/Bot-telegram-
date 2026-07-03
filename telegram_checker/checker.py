@@ -30,11 +30,14 @@ class TelegramChecker:
                 f"{t_get_client_end - t_get_client_start:.4f}s"
             )
         except SessionUnauthorizedError:
-            # الجلسة معطلة أو الرقم محظور نهائياً - نقوم بتعطيله في قاعدة البيانات فوراً لمنع تعليق النظام
+            # الجلسة غير مصرح بها - نضع توقفاً مؤقتاً طويلاً (6 ساعات) بدلاً من التعطيل النهائي
+            # التعطيل النهائي يُترك للأدمن فقط عبر لوحة الإدارة لتجنب حذف جميع الحسابات تلقائياً
             logger.warning(
-                f"[Checker ID: {account.get('id')}] الجلسة غير مصرح بها. تعطيل الحساب في قاعدة البيانات."
+                f"[Checker ID: {account.get('id')}] الجلسة غير مصرح بها - "
+                f"تطبيق توقف مؤقت 6 ساعات (21600 ثانية) بدلاً من التعطيل الدائم"
             )
-            await account_manager.disable_account(account["id"])
+            # وضع توقف 6 ساعات لإعطاء الأدمن وقتاً لإصلاح الجلسة أو حذف الحساب
+            await flood_manager.set_flood(account["id"], seconds=21600)
             try:
                 await telegram_client_manager.disconnect_client(account["id"])
             except Exception:
@@ -42,7 +45,7 @@ class TelegramChecker:
             return {
                 "status": "SESSION_EXPIRED",
                 "phone": phone,
-                "status_text": "⚠️ جلسة الفاحص منتهية - تم تعطيل الحساب تلقائياً"
+                "status_text": "⚠️ جلسة الفاحص منتهية - إعادة محاولة بعد 6 ساعات"
             }
         except Exception as e:
             # خطأ اتصال أو استثناء غير متوقع، نقوم بفصل الكائن لتهيئة الاتصال في المرة القادمة
