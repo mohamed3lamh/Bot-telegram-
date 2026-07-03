@@ -18,8 +18,16 @@ class TelegramChecker:
 
     async def check_phone(self, account, phone):
         """ فحص حالة الرقم والجلسة بدقة متناهية بناءً على رد سيرفر التلغرام الفوري. """
+        import time
+        t_start = time.perf_counter()
         try:
+            t_get_client_start = time.perf_counter()
             client = await telegram_client_manager.get_client(account)
+            t_get_client_end = time.perf_counter()
+            logger.info(
+                f"[PERF_TRACE] [Checker ID: {account.get('id')}] get_client duration: "
+                f"{t_get_client_end - t_get_client_start:.4f}s"
+            )
         except SessionUnauthorizedError:
             await account_manager.disable_account(account["id"])
             return {
@@ -29,8 +37,13 @@ class TelegramChecker:
             }
         try:
             # محاولة إرسال طلب الكود للرقم لمعرفة حالته وجلسته فوراً
+            t_send_code_start = time.perf_counter()
             await client.send_code_request(phone)
-            await client.disconnect()
+            t_send_code_end = time.perf_counter()
+            logger.info(
+                f"[PERF_TRACE] [Checker ID: {account.get('id')}] send_code_request duration: "
+                f"{t_send_code_end - t_send_code_start:.4f}s"
+            )
             # إذا مر السطر السابق بدون أخطاء، فالرقم مفتوح وجاهز تماماً بدون باسورد
             return {
                 "status": "NO_SESSION",
@@ -38,7 +51,6 @@ class TelegramChecker:
                 "status_text": "✅ الرقم بدون جلسة"
             }
         except SessionPasswordNeededError:
-            await client.disconnect()
             # الرقم شغال وموجود ولكن صاحبه وضع كلمة سر التحقق بخطوتين
             return {
                 "status": "HAS_SESSION",
@@ -46,15 +58,13 @@ class TelegramChecker:
                 "status_text": "⚠️ الرقم لديه جلسة"
             }
         except PhoneNumberBannedError:
-            await client.disconnect()
             # الرقم طار وتم حظره من شركة التلغرام تماماً
             return {
                 "status": "BANNED",
                 "phone": phone,
-                "status_text": "🚯 محظور"
+                "status_text": "📵 مـحـظـور"
             }
         except PhoneNumberInvalidError:
-            await client.disconnect()
             return {
                 "status": "INVALID",
                 "phone": phone,
@@ -63,14 +73,17 @@ class TelegramChecker:
         except FloodWaitError as e:
             # في حال واجه الحساب الفاحص حظر مؤقت (سبام) من كثرة الفحص
             await flood_manager.set_flood(account["id"], e.seconds)
-            await client.disconnect()
             return {
                 "status": "FLOOD",
                 "seconds": e.seconds,
                 "phone": phone
             }
         except Exception as e:
-            await client.disconnect()
+            # في حالة حدوث خطأ غير متوقع، قد يكون الاتصال قد تضرر، فنفصله للتأكد من إعادة بنائه في المرة القادمة
+            try:
+                await telegram_client_manager.disconnect_client(account["id"])
+            except Exception:
+                pass
             return {
                 "status": "ERROR",
                 "error": str(e),
