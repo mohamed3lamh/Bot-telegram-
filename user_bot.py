@@ -801,13 +801,8 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                     
                     check_status = check_result.get("status")
                     raw_status = check_result.get("status_text", "")
-                    if check_status in ["NO_SESSION", "HAS_SESSION", "BANNED", "INVALID"]:
-                        if "HAS_SESSION" in raw_status or "محظور" in raw_status:
-                            status_text = f"⚠️ {raw_status}"
-                        elif check_status == "INVALID":
-                            status_text = "⚠️ رقم غير صالح"
-                        else:
-                            status_text = "✅ الرقم بدون جلسة"
+                    if raw_status:
+                        status_text = raw_status
                     else:
                         status_text = "⚪️ غير معروف / معلق"
                 else:

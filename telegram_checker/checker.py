@@ -62,7 +62,7 @@ class TelegramChecker:
             return {
                 "status": "BANNED",
                 "phone": phone,
-                "status_text": "🚯 محظور"
+                "status_text": "📵 مـحـظـور"
             }
         except PhoneNumberInvalidError:
             return {
