@@ -131,6 +131,11 @@ bot_owner_id = None
 
 MAX_CONCURRENT_REQUESTS = 2
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+
+# ==================== كاش DB: تجديد كل 30 ثانية فقط ====================
+_db_cache = {}          # {user_id: {"accounts": [...], "channel": ..., "countries": [...]}}
+_db_cache_ts = {}       # {user_id: timestamp آخر تحديث}
+DB_CACHE_TTL = 30       # ثانية
 # ==================== 1. القائمة الرئيسية ====================
 async def start_user_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🔰 مرحباً بك في بوت صيد الأرقام 🔰\n\nاختر أحد الخيارات أدناه للبدء:"
@@ -698,17 +703,28 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     user_id = job.user_id
     
-    t_db_start = time.perf_counter()
-    active_accounts, channel, countries = await asyncio.gather(
-        asyncio.to_thread(db.get_active_site_accounts, user_id),
-        asyncio.to_thread(db.get_hunting_channel, user_id),
-        asyncio.to_thread(db.get_user_countries, user_id)
-    )
-    t_db_end = time.perf_counter()
-    
-    logger.info(
-        f"[PERF_TRACE] [User: {user_id}] Concurrent DB calls duration: {t_db_end - t_db_start:.4f}s"
-    )
+    now = time.perf_counter()
+    cache_age = now - _db_cache_ts.get(user_id, 0)
+    if user_id not in _db_cache or cache_age > DB_CACHE_TTL:
+        t_db_start = time.perf_counter()
+        active_accounts, channel, countries = await asyncio.gather(
+            asyncio.to_thread(db.get_active_site_accounts, user_id),
+            asyncio.to_thread(db.get_hunting_channel, user_id),
+            asyncio.to_thread(db.get_user_countries, user_id)
+        )
+        t_db_end = time.perf_counter()
+        _db_cache[user_id] = {"accounts": active_accounts, "channel": channel, "countries": countries}
+        _db_cache_ts[user_id] = now
+        logger.info(
+            f"[PERF_TRACE] [User: {user_id}] DB refreshed (cache miss): {t_db_end - t_db_start:.4f}s"
+        )
+    else:
+        active_accounts = _db_cache[user_id]["accounts"]
+        channel        = _db_cache[user_id]["channel"]
+        countries      = _db_cache[user_id]["countries"]
+        logger.info(
+            f"[PERF_TRACE] [User: {user_id}] DB served from cache (age={cache_age:.1f}s)"
+        )
 
     if not active_accounts or not channel or not countries:
         job.schedule_removal()
