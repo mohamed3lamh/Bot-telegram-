@@ -367,7 +367,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         bot_owner_id = user_id
 
         context.job_queue.run_repeating(
-            check_and_hunt_numbers, interval=4, first=1, user_id=user_id,
+            check_and_hunt_numbers, interval=1, first=1, user_id=user_id,
             name=f"hunt_{user_id}"
         )
         db.set_hunting_status(user_id, 1)
