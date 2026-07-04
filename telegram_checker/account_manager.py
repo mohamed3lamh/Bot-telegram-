@@ -80,10 +80,6 @@ class AccountManager:
         available = []
         for account in accounts:
             flood_until = account["flood_until"]
-            # التأكد من مطابقة المنطقة الزمنية لتجنب TypeError
-            if flood_until is not None and flood_until.tzinfo is None:
-                flood_until = flood_until.replace(tzinfo=timezone.utc)
-                
             if flood_until is None or flood_until <= now:
                 available.append(account)
         return available

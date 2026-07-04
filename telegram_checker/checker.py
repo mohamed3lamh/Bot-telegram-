@@ -1,10 +1,10 @@
 import asyncio
+import os
 import logging
+from telethon import functions, types
 from telethon.errors import (
-    FloodWaitError, PhoneNumberBannedError,
-    SessionPasswordNeededError, PhoneNumberInvalidError,
-    PhoneMigrateError, NetworkMigrateError, UserMigrateError,
-    PhoneNumberUnoccupiedError
+    FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
+    SessionPasswordNeededError, PhoneNumberInvalidError
 )
 from .telegram_client import telegram_client_manager, SessionUnauthorizedError
 from .account_manager import account_manager
@@ -51,18 +51,67 @@ class TelegramChecker:
         - يمنع التعارض (Race Condition) وتلف الاتصال الداخلي لـ Telethon.
         """
         import time
-        account_id = account["id"]
-
-        # ──────────────────────────────────────────────────
-        # اكتساب القفل الخاص بالحساب قبل أي عملية
-        # يضمن عدم وجود عمليتين متزامنتين على نفس الجلسة
-        # ──────────────────────────────────────────────────
-        lock = telegram_client_manager.get_account_lock(account_id)
-
-        async with lock:
-            t_start = time.perf_counter()
-
-            # ── الخطوة 1: الحصول على الـ client المتصل ──
+        t_start = time.perf_counter()
+        try:
+            t_get_client_start = time.perf_counter()
+            client = await telegram_client_manager.get_client(account)
+            t_get_client_end = time.perf_counter()
+            logger.info(
+                f"[PERF_TRACE] [Checker ID: {account.get('id')}] get_client duration: "
+                f"{t_get_client_end - t_get_client_start:.4f}s"
+            )
+        except SessionUnauthorizedError:
+            await account_manager.disable_account(account["id"])
+            return {
+                "status": "ACCOUNT_DISABLED",
+                "phone": phone,
+                "status_text": "❌ حساب الفاحص تالف وتم تعطيله"
+            }
+        try:
+            # محاولة إرسال طلب الكود للرقم لمعرفة حالته وجلسته فوراً
+            t_send_code_start = time.perf_counter()
+            await client.send_code_request(phone)
+            t_send_code_end = time.perf_counter()
+            logger.info(
+                f"[PERF_TRACE] [Checker ID: {account.get('id')}] send_code_request duration: "
+                f"{t_send_code_end - t_send_code_start:.4f}s"
+            )
+            # إذا مر السطر السابق بدون أخطاء، فالرقم مفتوح وجاهز تماماً بدون باسورد
+            return {
+                "status": "NO_SESSION",
+                "phone": phone,
+                "status_text": "✅ الرقم بدون جلسة"
+            }
+        except SessionPasswordNeededError:
+            # الرقم شغال وموجود ولكن صاحبه وضع كلمة سر التحقق بخطوتين
+            return {
+                "status": "HAS_SESSION",
+                "phone": phone,
+                "status_text": "⚠️ الرقم لديه جلسة"
+            }
+        except PhoneNumberBannedError:
+            # الرقم طار وتم حظره من شركة التلغرام تماماً
+            return {
+                "status": "BANNED",
+                "phone": phone,
+                "status_text": "📵 مـحـظـور"
+            }
+        except PhoneNumberInvalidError:
+            return {
+                "status": "INVALID",
+                "phone": phone,
+                "status_text": "⚠️ رقم غير صالح"
+            }
+        except FloodWaitError as e:
+            # في حال واجه الحساب الفاحص حظر مؤقت (سبام) من كثرة الفحص
+            await flood_manager.set_flood(account["id"], e.seconds)
+            return {
+                "status": "FLOOD",
+                "seconds": e.seconds,
+                "phone": phone
+            }
+        except Exception as e:
+            # في حالة حدوث خطأ غير متوقع، قد يكون الاتصال قد تضرر، فنفصله للتأكد من إعادة بنائه في المرة القادمة
             try:
                 client = await telegram_client_manager.get_client(account)
                 logger.info(
@@ -270,60 +319,53 @@ class TelegramChecker:
                 return acct
         return None
 
-    async def wait_for_account(self) -> dict:
-        """ينتظر حتى يتوفر حساب فاحص."""
+    async def wait_for_account(self):
+        """ الانتظار حتى يصبح هناك حساب متاح. """
         while True:
             account = await self.get_available_account()
             if account:
                 return account
-            logger.info("[Checker] لا يوجد حساب فاحص متاح، إعادة المحاولة بعد 10 ثوانٍ...")
-            await asyncio.sleep(10)
+            await asyncio.sleep(5)
 
-    async def check_numbers(self, phones: list, callback=None) -> list:
-        """فحص قائمة أرقام بشكل تسلسلي."""
+    async def check_numbers(self, phones, callback=None):
+        """ فحص مجموعة أرقام. """
         results = []
         for phone in phones:
             account = await self.wait_for_account()
             result = await self.check_phone(account, phone)
-            if result["status"] in ["FLOOD", "SESSION_EXPIRED", "ACCOUNT_DISABLED"]:
+            if result["status"] in ["FLOOD", "ACCOUNT_DISABLED"]:
                 continue
             results.append(result)
             if callback:
                 await callback(result)
         return results
 
-
 class BatchChecker:
-    def __init__(self, checker: TelegramChecker):
+    def __init__(self, checker):
         self.checker = checker
 
-    async def worker(self, account: dict, queue: asyncio.Queue, callback=None):
-        """
-        عامل لحساب Telegram واحد.
-        check_phone داخلياً مقيّد بالقفل لذا لا يوجد تزامن على الجلسة.
-        """
+    async def worker(self, account, queue, callback=None):
+        """ عامل يستخدم حساب Telegram واحد لفحص الطابور بالتوازي. """
         while True:
             try:
                 phone = await queue.get()
             except asyncio.CancelledError:
                 break
-
             if phone is None:
                 queue.task_done()
                 break
-
+            
             result = await self.checker.check_phone(account, phone)
-
             if result["status"] == "FLOOD":
                 await flood_manager.set_flood(account["id"], result["seconds"])
                 queue.put_nowait(phone)
                 queue.task_done()
                 break
-            elif result["status"] in ["SESSION_EXPIRED", "ACCOUNT_DISABLED"]:
+            elif result["status"] == "ACCOUNT_DISABLED":
                 queue.put_nowait(phone)
                 queue.task_done()
                 break
-
+                
             if callback:
                 try:
                     await callback(result)
@@ -394,7 +436,6 @@ class BatchChecker:
 
         return True
 
-
-# الكائنات العامة
+# بناء وإخراج الكائنات العامة للمشروع خارج الكلاسات (المسافات صفرية تماماً هنا)
 telegram_checker = TelegramChecker()
 batch_checker = BatchChecker(telegram_checker)
