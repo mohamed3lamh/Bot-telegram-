@@ -12,6 +12,30 @@ from .flood_manager import flood_manager
 
 logger = logging.getLogger(__name__)
 
+# ──────────────────────────────────────────────────────────────────
+# إعداد إشعارات المشرف (يُعيّن من main_bot عند بدء التشغيل)
+# ──────────────────────────────────────────────────────────────────
+_admin_notify_callback = None   # async callable(message: str)
+
+
+def set_admin_notify(callback):
+    """
+    تعيين دالة الإشعار التي ترسل رسائل للمشرف.
+    يُستدعى من main_bot عند تهيئة التطبيق:
+        checker.set_admin_notify(lambda msg: bot.send_message(ADMIN_ID, msg))
+    """
+    global _admin_notify_callback
+    _admin_notify_callback = callback
+
+
+async def _notify_admin(message: str):
+    """إرسال إشعار للمشرف إذا كانت الدالة مُعيَّنة."""
+    if _admin_notify_callback:
+        try:
+            await _admin_notify_callback(message)
+        except Exception as e:
+            logger.warning(f"[Notify] فشل إرسال الإشعار للمشرف: {e}")
+
 
 class TelegramChecker:
     def __init__(self):
@@ -21,7 +45,7 @@ class TelegramChecker:
         """
         فحص حالة رقم هاتف عبر Telegram API.
 
-        ⚡ التصميم الجديد:
+        ⚡ التصميم:
         - يُكتسب قفل الحساب (account lock) قبل أي عملية على الـ client.
         - هذا يضمن أن مهمة واحدة فقط تستخدم نفس جلسة Telethon في أي لحظة.
         - يمنع التعارض (Race Condition) وتلف الاتصال الداخلي لـ Telethon.
@@ -55,6 +79,12 @@ class TelegramChecker:
                     await telegram_client_manager.disconnect_client(account_id)
                 except Exception:
                     pass
+                # ─── إشعار المشرف فور انتهاء الجلسة ───
+                await _notify_admin(
+                    f"⚠️ *انتهاء جلسة فاحص*\n"
+                    f"الحساب رقم `{account_id}` انتهت جلسته.\n"
+                    f"يرجى إعادة تسجيل الدخول لاستئناف الفحص."
+                )
                 return {
                     "status": "SESSION_EXPIRED",
                     "phone": phone,
@@ -84,7 +114,7 @@ class TelegramChecker:
                     f"[Checker] #{account_id}: send_code_request أُنجز في "
                     f"{time.perf_counter() - t_req:.3f}s"
                 )
-                # وصلنا هنا بدون استثناء → الرقم بدون جلسة
+                # وصلنا هنا بدون استثناء → الرقم مسجل في Telegram لكن بدون جلسة نشطة
                 return {
                     "status": "NO_SESSION",
                     "phone": phone,
@@ -227,11 +257,14 @@ class TelegramChecker:
                 }
 
     async def get_available_account(self) -> dict | None:
-        """يُرجع أول حساب فاحص متاح (مفعّل وغير محظور مؤقتاً)."""
+        """
+        يُرجع الحساب الأقل استخداماً (Round Robin بسيط مبني على flood_manager).
+        يُفضّل الحسابات غير المحظورة ويعيد أولها متاحاً.
+        """
         accounts = await account_manager.get_available_accounts()
         if not accounts:
             return None
-        # نُرجع أول حساب متاح غير مُقيَّد بـ FloodWait
+        # فلترة الحسابات التي لا تزال في FloodWait
         for acct in accounts:
             if not await flood_manager.is_flooded(acct["id"]):
                 return acct
@@ -292,11 +325,21 @@ class BatchChecker:
                 break
 
             if callback:
-                await callback(result)
+                try:
+                    await callback(result)
+                except Exception as cb_err:
+                    logger.warning(f"[BatchChecker] خطأ في callback: {cb_err}")
             queue.task_done()
 
     async def run(self, phones: list, callback=None) -> bool:
-        """تشغيل الفحص المتوازي — حساب واحد = عامل واحد."""
+        """
+        تشغيل الفحص المتوازي — حساب واحد = عامل واحد.
+
+        التحسينات:
+        - إذا انتهى جميع الـ workers بسبب FLOOD، يُنتظر حتى تنتهي مدة الحظر
+          ثم يُعاد إطلاق workers جديدة تلقائياً (Auto-Recovery).
+        - يُعيد جلب الحسابات عند كل جولة لاستيعاب أي حسابات جديدة أُضيفت.
+        """
         if not phones:
             return True
 
@@ -304,25 +347,51 @@ class BatchChecker:
         for phone in phones:
             await queue.put(phone)
 
-        accounts = await account_manager.get_all_accounts()
-        workers = []
+        while not queue.empty():
+            # ── جلب الحسابات من جديد في كل جولة ──────────────────────────
+            # يضمن أن الحسابات المضافة حديثاً تدخل التوزيع فوراً
+            all_accounts = await account_manager.get_all_accounts()
 
-        for account in accounts:
-            if await flood_manager.is_flooded(account["id"]):
-                continue
-            task = asyncio.create_task(
-                self.worker(account, queue, callback)
-            )
-            workers.append(task)
+            workers = []
+            for account in all_accounts:
+                if await flood_manager.is_flooded(account["id"]):
+                    continue
+                task = asyncio.create_task(
+                    self.worker(account, queue, callback)
+                )
+                workers.append(task)
 
-        if not workers:
-            logger.warning("[BatchChecker] لا يوجد حساب فاحص نشط — إلغاء الدفعة.")
-            return False
+            if not workers:
+                # ── Auto-Recovery: جميع الحسابات في FloodWait ───────────
+                logger.warning(
+                    "[BatchChecker] جميع الحسابات محظورة مؤقتاً — "
+                    "انتظار 30 ثانية ثم إعادة المحاولة تلقائياً..."
+                )
+                await _notify_admin(
+                    "⏳ *تحذير الفاحص*\n"
+                    "جميع حسابات الفحص في حالة FloodWait.\n"
+                    "سيُعاد المحاولة تلقائياً بعد انتهاء مدة الحظر."
+                )
+                # انتظر 30 ثانية ثم أعد الفحص
+                await asyncio.sleep(30)
+                continue  # ← إعادة التحقق من الحسابات المتاحة
 
-        await queue.join()
-        for _ in workers:
-            await queue.put(None)
-        await asyncio.gather(*workers, return_exceptions=True)
+            # انتظار اكتمال هذه الجولة
+            await queue.join()
+            # إيقاف الـ workers بالترتيب
+            for _ in workers:
+                await queue.put(None)
+            await asyncio.gather(*workers, return_exceptions=True)
+
+            # إذا كان الطابور لا يزال يحتوي أرقاماً (أُعيدت بسبب FLOOD)،
+            # تدور الحلقة مرة أخرى وتُعيد جلب الحسابات
+            if not queue.empty():
+                logger.info(
+                    f"[BatchChecker] لا يزال في الطابور {queue.qsize()} رقم — "
+                    f"إعادة توزيع على الحسابات المتاحة..."
+                )
+                await asyncio.sleep(5)  # توقف قصير قبل الجولة التالية
+
         return True
 
 

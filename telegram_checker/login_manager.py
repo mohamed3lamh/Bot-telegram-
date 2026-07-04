@@ -6,7 +6,7 @@ from telethon.errors import (
     SessionPasswordNeededError, PhoneCodeExpiredError, PhoneCodeInvalidError,
     FloodWaitError, ApiIdInvalidError, PhoneNumberInvalidError,
 )
-from database import save_telegram_account
+from .account_manager import account_manager
 
 class LoginManager:
     def __init__(self):
@@ -96,12 +96,13 @@ class LoginManager:
         me = await client.get_me()
         string_session = client.session.save()
         
-        await asyncio.to_thread(
-            save_telegram_account,
+        # استخدام account_manager.add_account لإبطال الكاش فوراً
+        # وضمان دخول الحساب الجديد في توزيع الفحص بدون تأخير
+        await account_manager.add_account(
             phone=phone,
             api_id=data["api_id"],
             api_hash=data["api_hash"],
-            string_session=string_session
+            string_session=string_session,
         )
         
         result = {

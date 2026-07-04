@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 from .account_manager import account_manager
 from .login_manager import login_manager
-from .checker import batch_checker
+from .checker import batch_checker, set_admin_notify
 
 (
     API_ID,
@@ -181,8 +181,9 @@ async def start_check_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await query.message.reply_text("🚀 جاري بدء فحص الجلسات والأرقام بالتوازي وتوليد التقارير...")
 
-    # تثبيت سياق البوت والمعرف الخاص بالمستخدم لتشغيل الإرسال الفوري
-    my_callback = lambda res: send_number_report_callback(res, context, chat_id=user_id)
+    # ─── إصلاح: async def بدلاً من lambda لضمان صحة استدعاء coroutine ───
+    async def my_callback(res):
+        await send_number_report_callback(res, context, chat_id=user_id)
 
     # تشغيل الفحص الجماعي المتوازي المحدث من ملف checker.py
     asyncio.create_task(batch_checker.run(phones=phones_to_check, callback=my_callback))

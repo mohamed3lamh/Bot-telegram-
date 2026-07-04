@@ -8,6 +8,7 @@ from telegram.request import HTTPXRequest
 import database as db
 from bot_manager import bot_manager
 from telegram_checker.login_manager import login_manager
+from telegram_checker.checker import set_admin_notify
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -888,6 +889,24 @@ async def main():
     await main_app.initialize()
     await main_app.updater.start_polling()
     await main_app.start()
+
+    # ── تعيين دالة إشعار المشرف للـ Checker ─────────────────────────────
+    # تُرسل عند انتهاء جلسة أي حساب أو دخول جميع الحسابات FloodWait
+    if ADMIN_ID != 0:
+        async def _checker_admin_notify(message: str):
+            try:
+                await main_app.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=message,
+                    parse_mode="Markdown"
+                )
+            except Exception as notify_err:
+                logger.warning(f"[AdminNotify] فشل إرسال الإشعار: {notify_err}")
+        set_admin_notify(_checker_admin_notify)
+        logger.info(f"[Main] تم تعيين إشعارات المشرف ({ADMIN_ID}) للـ Checker ✅")
+    else:
+        logger.warning("[Main] ADMIN_ID غير مُعيَّن — إشعارات المشرف مُعطَّلة")
+    # ─────────────────────────────────────────────────────────────────────
 
     asyncio.create_task(safe_restore())
 

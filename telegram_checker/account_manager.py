@@ -47,7 +47,7 @@ class AccountManager:
         return accounts
 
     def invalidate_accounts_cache(self):
-        """ إبطال الكاش فوراً (يُستخدم عند تعطيل حساب أو تغيير حالته). """
+        """ إبطال الكاش فوراً (يُستخدم عند تعديل حالة أي حساب). """
         self._accounts_cache = None
         self._accounts_cache_ts = 0
 
@@ -60,21 +60,18 @@ class AccountManager:
         now = datetime.now(timezone.utc)
         for account in accounts:
             flood_until = account["flood_until"]
-            # التأكد من مطابقة المنطقة الزمنية لتجنب TypeError: can't compare offset-naive and offset-aware datetimes
+            # التأكد من مطابقة المنطقة الزمنية لتجنب TypeError
             if flood_until is not None and flood_until.tzinfo is None:
                 flood_until = flood_until.replace(tzinfo=timezone.utc)
                 
-            # إذا الحساب غير داخل FloodWait
             if flood_until is None:
                 return account
-            # انتهى وقت الـ Flood
             if flood_until <= now:
                 return account
         return None
 
-    # 🚀 الدالة المضافة لحل مشكلة الـ Logs وتطابق الأسماء
     async def get_available_accounts(self):
-        """ دالة إضافية بالصيغة الجمع لتفادي خطأ AttributeError في نظام الصيد """
+        """ يرجع جميع الحسابات الصالحة للاستخدام (ليست في FloodWait). """
         accounts = await self.get_all_accounts()
         if not accounts:
             return []
@@ -120,5 +117,21 @@ class AccountManager:
                     cur.close()
         await asyncio.to_thread(_enable)
         self.invalidate_accounts_cache()  # إبطال الكاش فوراً
+
+    async def add_account(self, phone, api_id, api_hash, string_session):
+        """
+        إضافة حساب جديد للقاعدة وإبطال الكاش فوراً لضمان دخوله التوزيع.
+        يُفضَّل استدعاء هذه الدالة بدلاً من database.save_telegram_account مباشرة.
+        """
+        import database
+        await asyncio.to_thread(
+            database.save_telegram_account,
+            phone=phone,
+            api_id=api_id,
+            api_hash=api_hash,
+            string_session=string_session,
+        )
+        self.invalidate_accounts_cache()  # ← ضمان دخول الحساب الجديد فوراً
+
 
 account_manager = AccountManager()
