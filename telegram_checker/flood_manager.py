@@ -1,13 +1,23 @@
 from datetime import datetime, timedelta, timezone
 import database
 
+
+def _normalize_dt(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    return value
+
 class FloodManager:
 
     async def is_flooded(self, account_id):
         """
         التحقق من حالة الحظر المؤقت (FloodWait).
         """
-        flood_until = database.get_account_flood(account_id)
+        flood_until = _normalize_dt(database.get_account_flood(account_id))
         if not flood_until:
             return False
         return datetime.now(timezone.utc) < flood_until

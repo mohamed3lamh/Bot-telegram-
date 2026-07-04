@@ -1,6 +1,6 @@
 import asyncio
-import os
 import logging
+from contextlib import suppress
 from telethon import functions, types
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
@@ -12,12 +12,18 @@ from .flood_manager import flood_manager
 
 logger = logging.getLogger(__name__)
 
+REQUEST_TIMEOUT_SECONDS = 45
+
 class TelegramChecker:
     def __init__(self):
         pass
 
+    async def _safe_disconnect(self, client):
+        with suppress(Exception):
+            await client.disconnect()
+
     async def check_phone(self, account, phone):
-        """ فحص حالة الرقم والجلسة بدقة متناهية بناءً على رد سيرفر التلغرام الفوري. """
+        """فحص حالة الرقم بشكل آمن بدون ادعاء حالة جلسة غير مؤكدة."""
         try:
             client = await telegram_client_manager.get_client(account)
         except SessionUnauthorizedError:
@@ -28,49 +34,54 @@ class TelegramChecker:
                 "status_text": "❌ حساب الفاحص تالف وتم تعطيله"
             }
         try:
-            # محاولة إرسال طلب الكود للرقم لمعرفة حالته وجلسته فوراً
-            await client.send_code_request(phone)
-            await client.disconnect()
-            # إذا مر السطر السابق بدون أخطاء، فالرقم مفتوح وجاهز تماماً بدون باسورد
+            # إرسال طلب كود التحقق هو الإشارة الوحيدة المؤكدة هنا.
+            # لا يمكن الجزم بوجود/عدم وجود جلسة من هذا الطلب وحده.
+            await asyncio.wait_for(client.send_code_request(phone), timeout=REQUEST_TIMEOUT_SECONDS)
+            await self._safe_disconnect(client)
             return {
-                "status": "NO_SESSION",
+                "status": "CODE_SENT",
                 "phone": phone,
-                "status_text": "✅ الرقم بدون جلسة"
+                "status_text": "📨 تم إرسال كود التحقق"
             }
         except SessionPasswordNeededError:
-            await client.disconnect()
-            # الرقم شغال وموجود ولكن صاحبه وضع كلمة سر التحقق بخطوتين
+            await self._safe_disconnect(client)
             return {
                 "status": "HAS_SESSION",
                 "phone": phone,
-                "status_text": "⚠️ الرقم لديه جلسة"
+                "status_text": "⚠️ الحساب يتطلب كلمة مرور"
             }
         except PhoneNumberBannedError:
-            await client.disconnect()
-            # الرقم طار وتم حظره من شركة التلغرام تماماً
+            await self._safe_disconnect(client)
             return {
                 "status": "BANNED",
                 "phone": phone,
                 "status_text": "🚯 محظور"
             }
         except PhoneNumberInvalidError:
-            await client.disconnect()
+            await self._safe_disconnect(client)
             return {
                 "status": "INVALID",
                 "phone": phone,
                 "status_text": "⚠️ رقم غير صالح"
             }
         except FloodWaitError as e:
-            # في حال واجه الحساب الفاحص حظر مؤقت (سبام) من كثرة الفحص
             await flood_manager.set_flood(account["id"], e.seconds)
-            await client.disconnect()
+            await self._safe_disconnect(client)
             return {
                 "status": "FLOOD",
                 "seconds": e.seconds,
                 "phone": phone
             }
+        except asyncio.TimeoutError:
+            await self._safe_disconnect(client)
+            return {
+                "status": "ERROR",
+                "phone": phone,
+                "error": "request_timeout",
+                "status_text": "⏳ انتهت مهلة الفحص"
+            }
         except Exception as e:
-            await client.disconnect()
+            await self._safe_disconnect(client)
             return {
                 "status": "ERROR",
                 "error": str(e),
@@ -114,6 +125,12 @@ class BatchChecker:
     def __init__(self, checker):
         self.checker = checker
 
+    async def _safe_queue_put(self, queue, phone):
+        try:
+            queue.put_nowait(phone)
+        except asyncio.QueueFull:
+            await queue.put(phone)
+
     async def worker(self, account, queue, callback=None):
         """ عامل يستخدم حساب Telegram واحد لفحص الطابور بالتوازي. """
         while True:
@@ -124,18 +141,18 @@ class BatchChecker:
             if phone is None:
                 queue.task_done()
                 break
-            
+
             result = await self.checker.check_phone(account, phone)
             if result["status"] == "FLOOD":
                 await flood_manager.set_flood(account["id"], result["seconds"])
-                queue.put_nowait(phone)
+                await self._safe_queue_put(queue, phone)
                 queue.task_done()
                 break
             elif result["status"] == "ACCOUNT_DISABLED":
-                queue.put_nowait(phone)
+                await self._safe_queue_put(queue, phone)
                 queue.task_done()
                 break
-                
+
             if callback:
                 await callback(result)
             queue.task_done()
@@ -145,9 +162,11 @@ class BatchChecker:
         queue = asyncio.Queue()
         for phone in phones:
             await queue.put(phone)
-            
-        # جلب الحسابات باستخدام الدالة الصحيحة
+
         accounts = await account_manager.get_all_accounts()
+        if not accounts:
+            return False
+
         workers = []
         for account in accounts:
             if await flood_manager.is_flooded(account["id"]):
@@ -156,12 +175,26 @@ class BatchChecker:
                 self.worker(account, queue, callback)
             )
             workers.append(task)
-            
-        await queue.join()
-        for _ in workers:
-            await queue.put(None)
-        await asyncio.gather(*workers, return_exceptions=True)
-        return True
+
+        if not workers:
+            return False
+
+        timed_out = False
+        try:
+            await asyncio.wait_for(queue.join(), timeout=300)
+        except asyncio.TimeoutError:
+            timed_out = True
+            logger.warning("BatchChecker timed out waiting for queue completion")
+        finally:
+            if timed_out:
+                for task in workers:
+                    task.cancel()
+            else:
+                for _ in workers:
+                    await queue.put(None)
+            await asyncio.gather(*workers, return_exceptions=True)
+
+        return queue.empty() and not timed_out
 
 # بناء وإخراج الكائنات العامة للمشروع خارج الكلاسات (المسافات صفرية تماماً هنا)
 telegram_checker = TelegramChecker()

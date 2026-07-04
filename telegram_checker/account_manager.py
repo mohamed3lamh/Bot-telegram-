@@ -1,6 +1,16 @@
 from database import get_connection
 from datetime import datetime, timezone
 
+
+def _normalize_dt(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    return value
+
 class AccountManager:
     def __init__(self):
         pass
@@ -39,7 +49,7 @@ class AccountManager:
             
         now = datetime.now(timezone.utc)
         for account in accounts:
-            flood_until = account["flood_until"]
+            flood_until = _normalize_dt(account["flood_until"])
             # إذا الحساب غير داخل FloodWait
             if flood_until is None:
                 return account
@@ -58,7 +68,7 @@ class AccountManager:
         now = datetime.now(timezone.utc)
         available = []
         for account in accounts:
-            flood_until = account["flood_until"]
+            flood_until = _normalize_dt(account["flood_until"])
             if flood_until is None or flood_until <= now:
                 available.append(account)
         return available
