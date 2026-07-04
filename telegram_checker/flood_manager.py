@@ -11,9 +11,6 @@ class FloodManager:
         flood_until = await asyncio.to_thread(database.get_account_flood, account_id)
         if not flood_until:
             return False
-        # ضمان timezone awareness — قاعدة البيانات قد تُرجع naive datetime
-        if flood_until.tzinfo is None:
-            flood_until = flood_until.replace(tzinfo=timezone.utc)
         return datetime.now(timezone.utc) < flood_until
 
     async def set_flood(self, account_id, seconds):
