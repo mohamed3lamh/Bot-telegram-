@@ -88,7 +88,7 @@ class TelegramChecker:
                 "status": "ERROR",
                 "error": str(e),
                 "phone": phone,
-                "status_text": "⚪️ غير معروف / معلق"
+                "status_text": f"⚪️ خطأ: {type(e).__name__} ({e})"
             }
 
     async def get_available_account(self):
