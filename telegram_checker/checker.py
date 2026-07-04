@@ -38,7 +38,7 @@ class TelegramChecker:
         try:
             # محاولة إرسال طلب الكود للرقم لمعرفة حالته وجلسته فوراً
             t_send_code_start = time.perf_counter()
-            await client.send_code_request(phone)
+            await asyncio.wait_for(client.send_code_request(phone), timeout=15.0)
             t_send_code_end = time.perf_counter()
             logger.info(
                 f"[PERF_TRACE] [Checker ID: {account.get('id')}] send_code_request duration: "

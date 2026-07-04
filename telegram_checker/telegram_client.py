@@ -1,3 +1,4 @@
+import asyncio
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
@@ -28,9 +29,9 @@ class TelegramClientManager:
 
             try:
                 if not client.is_connected():
-                    await client.connect()
+                    await asyncio.wait_for(client.connect(), timeout=15.0)
 
-                if await client.is_user_authorized():
+                if await asyncio.wait_for(client.is_user_authorized(), timeout=15.0):
                     return client
             except Exception:
                 pass
@@ -41,9 +42,9 @@ class TelegramClientManager:
             account["api_hash"]
         )
 
-        await client.connect()
+        await asyncio.wait_for(client.connect(), timeout=15.0)
 
-        if not await client.is_user_authorized():
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=15.0):
             await client.disconnect()
             raise SessionUnauthorizedError(
                 "Telegram session is not authorized."
