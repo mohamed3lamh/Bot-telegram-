@@ -121,6 +121,11 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 target_id, value = text.split(" ")
                 target_id = int(target_id)
                 await asyncio.to_thread(db.ban_user, target_id, int(value))
+                if int(value) == 1:
+                    try:
+                        await bot_manager.stop_bot(target_id)
+                    except Exception:
+                        pass
                 await asyncio.to_thread(db.log_activity, user_id, "حظر/إلغاء حظر", f"مستخدم {target_id} - حالة {value}")
                 status_text = "حظر" if int(value) == 1 else "إلغاء حظر"
                 await update.message.reply_text(f"✅ تم تعديل حالة المستخدم `{target_id}` إلى: **{status_text}**.")

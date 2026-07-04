@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, CallbackContext
 from telegram.request import HTTPXRequest
@@ -137,6 +138,10 @@ semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 _db_cache = {}          # {user_id: {"accounts": [...], "channel": ..., "countries": [...]}}
 _db_cache_ts = {}       # {user_id: timestamp آخر تحديث}
 DB_CACHE_TTL = 30       # ثانية
+
+# ==================== حدود الأمان (Fixes) ====================
+MAX_NUMBERS_PER_CYCLE = 10     # حد أقصى لشراء الأرقام في كل دورة (ثانية)
+MAX_TRACKED_PHONES = 5000      # حد أقصى للأرقام المتتبعة لمنع تسرب الذاكرة
 # ==================== 1. القائمة الرئيسية ====================
 async def start_user_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🔰 مرحباً بك في بوت صيد الأرقام 🔰\n\nاختر أحد الخيارات أدناه للبدء:"
@@ -747,6 +752,25 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
         job.schedule_removal()
         return
 
+    # فحص الحظر وانتهاء الاشتراك
+    try:
+        db_data = await asyncio.to_thread(db.get_bot, user_id)
+        if db_data and len(db_data) >= 4:
+            if db_data[3] == 1:
+                logger.warning(f"[User: {user_id}] تم إيقاف الصيد - المستخدم محظور")
+                job.schedule_removal()
+                return
+            expires_at = db_data[2]
+            if expires_at:
+                if isinstance(expires_at, str):
+                    expires_at = datetime.fromisoformat(expires_at.replace("Z", ""))
+                if expires_at.replace(tzinfo=None) <= datetime.now(timezone.utc).replace(tzinfo=None):
+                    logger.warning(f"[User: {user_id}] تم إيقاف الصيد - الاشتراك منتهي")
+                    job.schedule_removal()
+                    return
+    except Exception as e:
+        logger.error(f"[User: {user_id}] فشل فحص حالة المستخدم: {e}")
+
     if user_id not in repeat_tracker:
         repeat_tracker[user_id] = {}
 
@@ -779,6 +803,7 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
 
             # --- الفحص السريع (اختياري، يمكن تعطيله مؤقتًا للسرعة) ---
             status_text = "🔴 حالة غير معروفة"  # افتراضي إذا لم يتم الفحص
+            check_result = {}
             try:
                 t_get_checker_start = time.perf_counter()
                 account_checker = await telegram_checker.get_available_account()
@@ -809,7 +834,31 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                     logger.info(f"[PERF_TRACE] [Number: {phone_number}] No checker account available for checking.")
             except Exception as e:
                 logger.warning(f"فحص الرقم {phone_number} فشل: {e}")
-                
+
+            # --- تطبيق فلتر الدولة (تخطي الأرقام غير المرغوب فيها) ---
+            try:
+                check_status = check_result.get("status") if check_result else None
+                if check_status:  # فقط إن كان الفحص قد تم فعلاً
+                    cs = await asyncio.to_thread(db.get_country_settings, user_id, clean_country)
+                    filter_number_type = cs.get("number_type", "all")
+                    session_filter = cs.get("session_status", "all")
+                    if filter_number_type != "all" or session_filter != "all":
+                        should_skip = False
+                        if filter_number_type == "working" and check_status == "BANNED":
+                            should_skip = True
+                        elif filter_number_type == "banned" and check_status != "BANNED":
+                            should_skip = True
+                        if session_filter == "no_session" and check_status == "HAS_SESSION":
+                            should_skip = True
+                        elif session_filter == "has_session" and check_status != "HAS_SESSION":
+                            should_skip = True
+                        if should_skip:
+                            logger.info(f"[Filter] {phone_number}: لا يتوافق مع فلتر الدولة، إلغاء")
+                            await DurianAPI.cancel_number(username, api_key, phone_number)
+                            return
+            except Exception as e:
+                logger.warning(f"[Filter] فشل تطبيق الفلتر للرقم {phone_number}: {e}")
+
             # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة) ---
             country_name = clean_country.upper()
             country_flag = "🌐"
@@ -874,14 +923,25 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Error for user {user_id}, account {username}, country {country_code}: {e}")
 
-    # بناء قائمة المهام لجميع الحسابات والدول
+    # بناء قائمة المهام لجميع الحسابات والدول (مع rate limiting)
     tasks = []
+    numbers_this_cycle = 0
     for username, api_key in active_accounts:
         for country_code in countries:
+            if numbers_this_cycle >= MAX_NUMBERS_PER_CYCLE:
+                break
             tasks.append(process_account_country(username, api_key, country_code))
+            numbers_this_cycle += 1
+        if numbers_this_cycle >= MAX_NUMBERS_PER_CYCLE:
+            break
 
     # تنفيذ جميع المهام بشكل متوازٍ
     await asyncio.gather(*tasks)
+
+    # تنظيف دوري للـ repeat_tracker (منع تسرب الذاكرة)
+    if user_id in repeat_tracker and len(repeat_tracker[user_id]) > MAX_TRACKED_PHONES:
+        logger.info(f"[User: {user_id}] تنظيف repeat_tracker - {len(repeat_tracker[user_id])} مدخلة")
+        repeat_tracker[user_id] = {}
 
 def create_user_app(token: str):
     request_config = HTTPXRequest(
