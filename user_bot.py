@@ -450,10 +450,10 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         for i in range(0, len(page_countries), 2):
             row = []
             c1 = page_countries[i]
-            row.append(InlineKeyboardButton(c1["name"], callback_data=f"save_c_{c1['name']}_{c1['code']}"))
+            row.append(InlineKeyboardButton(c1["name"], callback_data=f"save_c|{c1['code']}"))
             if i + 1 < len(page_countries):
                 c2 = page_countries[i+1]
-                row.append(InlineKeyboardButton(c2["name"], callback_data=f"save_c_{c2['name']}_{c2['code']}"))
+                row.append(InlineKeyboardButton(c2["name"], callback_data=f"save_c|{c2['code']}"))
             keyboard.append(row)
         nav_row = []
         if page > 0:
@@ -464,27 +464,27 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
             keyboard.append(nav_row)
         keyboard.append([InlineKeyboardButton("🔙 العودة للرئيسية", callback_data="main_menu")])
         await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-    elif data.startswith("save_c_"):
-        parts = data.split("_")
-        # استخراج اسم الدولة والكود
-        # الصيغة: save_c_اسم_الدولة_code
-        country_name_with_emoji = parts[2]
-        country_code = parts[3]
-        # إذا كان اسم الدولة يحتوي على مسافات، فقد يكون هناك أجزاء إضافية
-        if len(parts) > 4:
-            country_name_with_emoji = "_".join(parts[2:-1])
-            country_code = parts[-1]
-        
-        # استبدال الشرطات السفلية بمسافات
-        country_name_with_emoji = country_name_with_emoji.replace("_", " ")
-        
+    elif data.startswith("save_c|") or data.startswith("save_c_"):
+        if "|" in data:
+            country_code = data.split("|", 1)[1].strip()
+        else:
+            parts = data.split("_")
+            country_code = parts[-1].strip()
+        country_name_with_emoji = country_code
+        for c in ALL_COUNTRIES:
+            if c["code"] == country_code:
+                country_name_with_emoji = c["name"]
+                break
         db.add_user_country(user_id, country_code)
         # رسالة منبثقة فقط، بدون تغيير الصفحة
         await query.answer(f"✔️ تمت إضافة {country_name_with_emoji} بنجاح", show_alert=True)
         # لا نغير الصفحة، يبقى المستخدم في نفس قائمة الدول
         return
-    elif data.startswith(("code_", "unban_", "cancel_", "rate_", "weak_")):
-        parts = data.split("_", 2)
+    elif data.startswith(("code|", "unban|", "cancel|", "rate|", "weak|", "code_", "unban_", "cancel_", "rate_", "weak_")):
+        if "|" in data:
+            parts = data.split("|", 2)
+        else:
+            parts = data.split("_", 2)
         if len(parts) < 3:
             await safe_answer(query, "⚠️ هذه الأزرار القديمة غير مدعومة...", show_alert=True)
             return
@@ -728,13 +728,14 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                     check_result = await telegram_checker.check_phone(account_checker, phone_number)
                     check_status = check_result.get("status")
                     raw_status = check_result.get("status_text", "")
-                    if check_status in ["NO_SESSION", "HAS_SESSION", "BANNED", "INVALID"]:
-                        if "HAS_SESSION" in raw_status or "محظور" in raw_status:
-                            status_text = f"⚠️ {raw_status}"
-                        elif check_status == "INVALID":
-                            status_text = "⚠️ رقم غير صالح"
-                        else:
-                            status_text = "✅ الرقم بدون جلسة"
+                    if check_status in ["CODE_SENT", "NO_SESSION"]:
+                        status_text = raw_status or "📨 تم إرسال كود التحقق"
+                    elif check_status == "HAS_SESSION":
+                        status_text = f"⚠️ {raw_status}" if raw_status else "⚠️ الحساب يتطلب كلمة مرور"
+                    elif check_status == "BANNED":
+                        status_text = f"⚠️ {raw_status}" if raw_status else "🚯 محظور"
+                    elif check_status == "INVALID":
+                        status_text = "⚠️ رقم غير صالح"
                     else:
                         status_text = "⚪️ غير معروف / معلق"
                 # إذا لم يكن هناك حساب فاحص، يبقى "🔴 حالة غير معروفة"
@@ -772,15 +773,15 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
 
             keyboard = [
                 [
-                    InlineKeyboardButton("- نسبة الوصول .", callback_data=f"rate_{username}_{phone_number}"),
-                    InlineKeyboardButton("- ضعيفه 🧌 .", callback_data=f"weak_{username}_{phone_number}")
+                    InlineKeyboardButton("- نسبة الوصول .", callback_data=f"rate|{username}|{phone_number}"),
+                    InlineKeyboardButton("- ضعيفه 🧌 .", callback_data=f"weak|{username}|{phone_number}")
                 ],
                 [
-                    InlineKeyboardButton("- طلب الكود .", callback_data=f"code_{username}_{phone_number}"),
-                    InlineKeyboardButton("- فك حظر .", callback_data=f"unban_{username}_{phone_number}")
+                    InlineKeyboardButton("- طلب الكود .", callback_data=f"code|{username}|{phone_number}"),
+                    InlineKeyboardButton("- فك حظر .", callback_data=f"unban|{username}|{phone_number}")
                 ],
                 [
-                    InlineKeyboardButton("- الغاء الرقم .", callback_data=f"cancel_{username}_{phone_number}")
+                    InlineKeyboardButton("- الغاء الرقم .", callback_data=f"cancel|{username}|{phone_number}")
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
