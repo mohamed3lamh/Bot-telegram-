@@ -142,6 +142,12 @@ DB_CACHE_TTL = 30       # ثانية
 # ==================== حدود الأمان (Fixes) ====================
 MAX_NUMBERS_PER_CYCLE = 10     # حد أقصى لشراء الأرقام في كل دورة (ثانية)
 MAX_TRACKED_PHONES = 5000      # حد أقصى للأرقام المتتبعة لمنع تسرب الذاكرة
+
+# ==================== الفحص الخلفي وتتبع الدول ====================
+background_check_semaphore = asyncio.Semaphore(10)  # حد الفحوصات المتزامنة
+_country_backoff = {}  # {f"{user_id}:{country_code}": {"next_retry": float, "count": int}}
+COUNTRY_BACKOFF_SECONDS = 60  # مدة تخطي الدولة إذا كانت فارغة
+
 # ==================== 1. القائمة الرئيسية ====================
 async def start_user_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🔰 مرحباً بك في بوت صيد الأرقام 🔰\n\nاختر أحد الخيارات أدناه للبدء:"
@@ -728,36 +734,27 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     now = time.perf_counter()
     cache_age = now - _db_cache_ts.get(user_id, 0)
     if user_id not in _db_cache or cache_age > DB_CACHE_TTL:
-        t_db_start = time.perf_counter()
         active_accounts, channel, countries = await asyncio.gather(
             asyncio.to_thread(db.get_active_site_accounts, user_id),
             asyncio.to_thread(db.get_hunting_channel, user_id),
             asyncio.to_thread(db.get_user_countries, user_id)
         )
-        t_db_end = time.perf_counter()
         _db_cache[user_id] = {"accounts": active_accounts, "channel": channel, "countries": countries}
         _db_cache_ts[user_id] = now
-        logger.info(
-            f"[PERF_TRACE] [User: {user_id}] DB refreshed (cache miss): {t_db_end - t_db_start:.4f}s"
-        )
     else:
         active_accounts = _db_cache[user_id]["accounts"]
-        channel        = _db_cache[user_id]["channel"]
-        countries      = _db_cache[user_id]["countries"]
-        logger.info(
-            f"[PERF_TRACE] [User: {user_id}] DB served from cache (age={cache_age:.1f}s)"
-        )
+        channel = _db_cache[user_id]["channel"]
+        countries = _db_cache[user_id]["countries"]
 
     if not active_accounts or not channel or not countries:
         job.schedule_removal()
         return
 
-    # فحص الحظر وانتهاء الاشتراك
     try:
         db_data = await asyncio.to_thread(db.get_bot, user_id)
         if db_data and len(db_data) >= 4:
             if db_data[3] == 1:
-                logger.warning(f"[User: {user_id}] تم إيقاف الصيد - المستخدم محظور")
+                logger.warning(f"[User: {user_id}] محظور")
                 job.schedule_removal()
                 return
             expires_at = db_data[2]
@@ -765,183 +762,189 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 if isinstance(expires_at, str):
                     expires_at = datetime.fromisoformat(expires_at.replace("Z", ""))
                 if expires_at.replace(tzinfo=None) <= datetime.now(timezone.utc).replace(tzinfo=None):
-                    logger.warning(f"[User: {user_id}] تم إيقاف الصيد - الاشتراك منتهي")
+                    logger.warning(f"[User: {user_id}] اشتراك منتهي")
                     job.schedule_removal()
                     return
     except Exception as e:
-        logger.error(f"[User: {user_id}] فشل فحص حالة المستخدم: {e}")
+        logger.error(f"[User: {user_id}] فشل فحص الحالة: {e}")
 
     if user_id not in repeat_tracker:
         repeat_tracker[user_id] = {}
 
-    async def process_account_country(username, api_key, country_code):
-        """معالجة دولة واحدة لحساب واحد، تُنفذ بشكل متوازٍ"""
-        clean_country = str(country_code).strip()
-        try:
-            t_sem_start = time.perf_counter()
-            async with semaphore:
-                t_sem_end = time.perf_counter()
-                t_api_start = time.perf_counter()
-                result = await DurianAPI.order_number_by_name(username, api_key, clean_country, project_id="0257")
-                t_api_end = time.perf_counter()
-                
-            sem_delay = t_sem_end - t_sem_start
-            api_delay = t_api_end - t_api_start
-            
-            logger.info(
-                f"[PERF_TRACE] [Task: {username}-{clean_country}] Queue/Semaphore wait={sem_delay:.4f}s, "
-                f"Durian API order={api_delay:.4f}s"
-            )
+    _clean_country_backoff(user_id)
 
-            if not result or result.get("status") != "success":
-                return
-            phone_number = result.get("number")
-            if not phone_number:
-                return
-
-            t_number_start = time.perf_counter()
-
-            # --- الفحص السريع (اختياري، يمكن تعطيله مؤقتًا للسرعة) ---
-            status_text = "🔴 حالة غير معروفة"  # افتراضي إذا لم يتم الفحص
-            check_result = {}
-            try:
-                t_get_checker_start = time.perf_counter()
-                account_checker = await telegram_checker.get_available_account()
-                t_get_checker_end = time.perf_counter()
-                
-                logger.info(
-                    f"[PERF_TRACE] [Number: {phone_number}] get_available_account duration: "
-                    f"{t_get_checker_end - t_get_checker_start:.4f}s"
-                )
-                
-                if account_checker:
-                    t_check_start = time.perf_counter()
-                    check_result = await telegram_checker.check_phone(account_checker, phone_number)
-                    t_check_end = time.perf_counter()
-                    
-                    logger.info(
-                        f"[PERF_TRACE] [Number: {phone_number}] telegram_checker.check_phone duration: "
-                        f"{t_check_end - t_check_start:.4f}s"
-                    )
-                    
-                    check_status = check_result.get("status")
-                    raw_status = check_result.get("status_text", "")
-                    if raw_status:
-                        status_text = raw_status
-                    else:
-                        status_text = "⚪️ غير معروف / معلق"
-                else:
-                    logger.info(f"[PERF_TRACE] [Number: {phone_number}] No checker account available for checking.")
-            except Exception as e:
-                logger.warning(f"فحص الرقم {phone_number} فشل: {e}")
-
-            # --- تطبيق فلتر الدولة (تخطي الأرقام غير المرغوب فيها) ---
-            try:
-                check_status = check_result.get("status") if check_result else None
-                if check_status:  # فقط إن كان الفحص قد تم فعلاً
-                    cs = await asyncio.to_thread(db.get_country_settings, user_id, clean_country)
-                    filter_number_type = cs.get("number_type", "all")
-                    session_filter = cs.get("session_status", "all")
-                    if filter_number_type != "all" or session_filter != "all":
-                        should_skip = False
-                        if filter_number_type == "working" and check_status == "BANNED":
-                            should_skip = True
-                        elif filter_number_type == "banned" and check_status != "BANNED":
-                            should_skip = True
-                        if session_filter == "no_session" and check_status == "HAS_SESSION":
-                            should_skip = True
-                        elif session_filter == "has_session" and check_status != "HAS_SESSION":
-                            should_skip = True
-                        if should_skip:
-                            logger.info(f"[Filter] {phone_number}: لا يتوافق مع فلتر الدولة، إلغاء")
-                            await DurianAPI.cancel_number(username, api_key, phone_number)
-                            return
-            except Exception as e:
-                logger.warning(f"[Filter] فشل تطبيق الفلتر للرقم {phone_number}: {e}")
-
-            # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة) ---
-            country_name = clean_country.upper()
-            country_flag = "🌐"
-            if clean_country.upper() in COUNTRY_INFO:
-                info = COUNTRY_INFO[clean_country.upper()]
-                country_name = info["name"]
-                country_flag = info["emoji"]
-            else:
-                # fallback للخريطة القديمة
-                for prefix, info in COUNTRY_MAP.items():
-                    if phone_number.replace("+", "").startswith(prefix):
-                        country_name = info["name"]
-                        country_flag = info["emoji"]
-                        break
-
-            # --- تحديث عداد التكرار ---
-            repeat_tracker[user_id][phone_number] = repeat_tracker[user_id].get(phone_number, 0) + 1
-            repeat_count = repeat_tracker[user_id][phone_number]
-
-            # --- صياغة الرسالة ---
-            message_text = (
-                        f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
-                        f"<b>    - الـرقـــــم : <code>{phone_number}</code></b>\n"
-                        f"<b>    - الـدولـة : {country_name} {country_flag}</b>\n"
-                        f"<b>    - الـحـالـة : {status_text}</b>\n"
-                        f"<b>    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة</b>\n"
-                        f"<b>    - الــكـــود : قـيـد الإنـتـظـار ❗️</b>"
-                    )
-
-            keyboard = [
-                [
-                    InlineKeyboardButton("- نسبة الوصول .", callback_data=f"rate_{username}_{phone_number}"),
-                    InlineKeyboardButton("- ضعيفه 🧌 .", callback_data=f"weak_{username}_{phone_number}")
-                ],
-                [
-                    InlineKeyboardButton("- طلب الكود .", callback_data=f"code_{username}_{phone_number}"),
-                    InlineKeyboardButton("- فك حظر .", callback_data=f"unban_{username}_{phone_number}")
-                ],
-                [
-                    InlineKeyboardButton("- الغاء الرقم .", callback_data=f"cancel_{username}_{phone_number}")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            t_send_start = time.perf_counter()
-            await context.bot.send_message(
-                chat_id=channel,
-                text=message_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup
-            )
-            t_send_end = time.perf_counter()
-            
-            logger.info(
-                f"[PERF_TRACE] [Number: {phone_number}] context.bot.send_message duration: "
-                f"{t_send_end - t_send_start:.4f}s"
-            )
-            logger.info(
-                f"[PERF_TRACE] [Number: {phone_number}] Total number-to-channel duration: "
-                f"{t_send_end - t_number_start:.4f}s"
-            )
-        except Exception as e:
-            logger.error(f"Error for user {user_id}, account {username}, country {country_code}: {e}")
-
-    # بناء قائمة المهام لجميع الحسابات والدول (مع rate limiting)
     tasks = []
     numbers_this_cycle = 0
     for username, api_key in active_accounts:
         for country_code in countries:
             if numbers_this_cycle >= MAX_NUMBERS_PER_CYCLE:
                 break
-            tasks.append(process_account_country(username, api_key, country_code))
+            bk = f"{user_id}:{country_code}"
+            if bk in _country_backoff and time.perf_counter() < _country_backoff[bk]["next_retry"]:
+                continue
+            elif bk in _country_backoff:
+                del _country_backoff[bk]
             numbers_this_cycle += 1
-        if numbers_this_cycle >= MAX_NUMBERS_PER_CYCLE:
-            break
+            tasks.append(_process_and_publish(context, user_id, username, api_key, country_code, channel))
 
-    # تنفيذ جميع المهام بشكل متوازٍ
-    await asyncio.gather(*tasks)
+    if tasks:
+        await asyncio.gather(*tasks)
 
-    # تنظيف دوري للـ repeat_tracker (منع تسرب الذاكرة)
     if user_id in repeat_tracker and len(repeat_tracker[user_id]) > MAX_TRACKED_PHONES:
-        logger.info(f"[User: {user_id}] تنظيف repeat_tracker - {len(repeat_tracker[user_id])} مدخلة")
+        logger.info(f"[User: {user_id}] تنظيف repeat_tracker")
         repeat_tracker[user_id] = {}
+
+
+def _get_country_info(country_code, phone_number):
+    country_name = country_code.upper()
+    country_flag = "🌐"
+    if country_code.upper() in COUNTRY_INFO:
+        info = COUNTRY_INFO[country_code.upper()]
+        country_name = info["name"]
+        country_flag = info["emoji"]
+    else:
+        for prefix, info in COUNTRY_MAP.items():
+            if phone_number.replace("+", "").startswith(prefix):
+                country_name = info["name"]
+                country_flag = info["emoji"]
+                break
+    return country_name, country_flag
+
+
+async def _update_channel_message(bot, channel_id, msg_id, phone, country_name, country_flag, status_text, repeat_count):
+    text = (
+        f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
+        f"<b>    - الـرقـــــم : <code>{phone}</code></b>\n"
+        f"<b>    - الـدولـة : {country_name} {country_flag}</b>\n"
+        f"<b>    - الـحـالـة : {status_text}</b>\n"
+        f"<b>    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة</b>\n"
+        f"<b>    - الــكـــود : قـيـد الإنـتـظـار ❗️</b>"
+    )
+    try:
+        await bot.edit_message_text(chat_id=channel_id, message_id=msg_id, text=text, parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+
+
+def _mark_country_backoff(user_id, country_code):
+    key = f"{user_id}:{country_code}"
+    entry = _country_backoff.get(key, {"count": 0, "next_retry": 0})
+    entry["count"] += 1
+    backoff = min(COUNTRY_BACKOFF_SECONDS * (entry["count"] ** 1.5), 600)
+    entry["next_retry"] = time.perf_counter() + backoff
+    _country_backoff[key] = entry
+    logger.info(f"[Backoff] {key}: تخطي {backoff:.0f}ث (المرة {entry['count']})")
+
+
+def _clean_country_backoff(user_id):
+    now = time.perf_counter()
+    for k in list(_country_backoff.keys()):
+        if k.startswith(f"{user_id}:") and now >= _country_backoff[k]["next_retry"]:
+            del _country_backoff[k]
+
+
+async def _process_and_publish(context, user_id, username, api_key, country_code, channel):
+    try:
+        clean_country = str(country_code).strip()
+        async with semaphore:
+            result = await DurianAPI.order_number_by_name(username, api_key, clean_country, project_id="0257")
+
+        if not result or result.get("status") != "success":
+            code = result.get("code") if result else None
+            msg = result.get("message", "") if result else ""
+            if code == 906 or "empty" in msg.lower():
+                _mark_country_backoff(user_id, clean_country)
+            return
+
+        phone_number = result.get("number")
+        if not phone_number:
+            return
+
+        repeat_tracker[user_id][phone_number] = repeat_tracker[user_id].get(phone_number, 0) + 1
+        repeat_count = repeat_tracker[user_id][phone_number]
+        country_name, country_flag = _get_country_info(clean_country, phone_number)
+
+        message_text = (
+            f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
+            f"<b>    - الـرقـــــم : <code>{phone_number}</code></b>\n"
+            f"<b>    - الـدولـة : {country_name} {country_flag}</b>\n"
+            f"<b>    - الـحـالـة : ⏳ جاري الفحص...</b>\n"
+            f"<b>    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة</b>\n"
+            f"<b>    - الــكـــود : قـيـد الإنـتـظـار ❗️</b>"
+        )
+
+        keyboard = [
+            [InlineKeyboardButton("- نسبة الوصول .", callback_data=f"rate_{username}_{phone_number}"),
+             InlineKeyboardButton("- ضعيفه 🧌 .", callback_data=f"weak_{username}_{phone_number}")],
+            [InlineKeyboardButton("- طلب الكود .", callback_data=f"code_{username}_{phone_number}"),
+             InlineKeyboardButton("- فك حظر .", callback_data=f"unban_{username}_{phone_number}")],
+            [InlineKeyboardButton("- الغاء الرقم .", callback_data=f"cancel_{username}_{phone_number}")]
+        ]
+
+        sent = await context.bot.send_message(
+            chat_id=channel,
+            text=message_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+        asyncio.create_task(_check_and_update(
+            context.bot, user_id, username, api_key, phone_number,
+            clean_country, country_name, country_flag, channel,
+            sent.message_id, repeat_count
+        ))
+    except Exception as e:
+        logger.error(f"[Publish] {username}/{country_code}: {e}")
+
+
+async def _check_and_update(bot, user_id, username, api_key, phone, country_code, country_name, country_flag, channel, msg_id, repeat_count):
+    async with background_check_semaphore:
+        try:
+            acc = await telegram_checker.get_available_account()
+            if not acc:
+                return
+
+            check_result = await telegram_checker.check_phone(acc, phone)
+            check_status = check_result.get("status")
+            status_text = check_result.get("status_text", "⚪️ غير معروف")
+
+            if check_status in ("FLOOD", "ACCOUNT_DISABLED"):
+                return
+            if check_status == "ERROR":
+                await _update_channel_message(bot, channel, msg_id, phone, country_name, country_flag, "⚪️ فشل الفحص", repeat_count)
+                return
+
+            should_cancel = False
+            try:
+                cs = await asyncio.to_thread(db.get_country_settings, user_id, country_code)
+                ft = cs.get("number_type", "all")
+                sf = cs.get("session_status", "all")
+                if ft != "all" or sf != "all":
+                    if ft == "working" and check_status == "BANNED":
+                        should_cancel = True
+                    elif ft == "banned" and check_status != "BANNED":
+                        should_cancel = True
+                    if sf == "no_session" and check_status == "HAS_SESSION":
+                        should_cancel = True
+                    elif sf == "has_session" and check_status != "HAS_SESSION":
+                        should_cancel = True
+            except Exception:
+                pass
+
+            if should_cancel:
+                try:
+                    await DurianAPI.cancel_number(username, api_key, phone)
+                except Exception:
+                    pass
+                try:
+                    await bot.delete_message(chat_id=channel, message_id=msg_id)
+                except Exception:
+                    pass
+                return
+
+            await _update_channel_message(bot, channel, msg_id, phone, country_name, country_flag, status_text, repeat_count)
+        except Exception as e:
+            logger.error(f"[BG] {phone}: {e}")
 
 def create_user_app(token: str):
     request_config = HTTPXRequest(
