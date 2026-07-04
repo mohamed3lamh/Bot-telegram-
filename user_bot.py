@@ -1,10 +1,7 @@
 import asyncio
 import logging
-import time
-from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, CallbackContext
-from telegram.request import HTTPXRequest
 from telegram.constants import ParseMode
 import database as db
 from durian_api import DurianAPI
@@ -133,21 +130,6 @@ bot_owner_id = None
 
 MAX_CONCURRENT_REQUESTS = 2
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
-
-# ==================== كاش DB: تجديد كل 30 ثانية فقط ====================
-_db_cache = {}          # {user_id: {"accounts": [...], "channel": ..., "countries": [...]}}
-_db_cache_ts = {}       # {user_id: timestamp آخر تحديث}
-DB_CACHE_TTL = 30       # ثانية
-
-# ==================== حدود الأمان (Fixes) ====================
-MAX_NUMBERS_PER_CYCLE = 10     # حد أقصى لشراء الأرقام في كل دورة (ثانية)
-MAX_TRACKED_PHONES = 5000      # حد أقصى للأرقام المتتبعة لمنع تسرب الذاكرة
-
-# ==================== الفحص الخلفي وتتبع الدول ====================
-background_check_semaphore = asyncio.Semaphore(10)  # حد الفحوصات المتزامنة
-_country_backoff = {}  # {f"{user_id}:{country_code}": {"next_retry": float, "count": int}}
-COUNTRY_BACKOFF_SECONDS = 60  # مدة تخطي الدولة إذا كانت فارغة
-
 # ==================== 1. القائمة الرئيسية ====================
 async def start_user_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🔰 مرحباً بك في بوت صيد الأرقام 🔰\n\nاختر أحد الخيارات أدناه للبدء:"
@@ -165,7 +147,7 @@ async def start_user_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== 2. قائمة الإعدادات ====================
 async def show_settings(update: Update, user_id: int):
-    channel = await asyncio.to_thread(db.get_hunting_channel, user_id)
+    channel = db.get_hunting_channel(user_id)
     channel_status = f"✅ مربوطة ({channel})" if channel else "❌ غير مضافة"
     text = (
         f"⚙️ **قائمة الإعدادات:**\n\n"
@@ -185,8 +167,8 @@ async def show_settings(update: Update, user_id: int):
 # ==================== 3. إدارة الحسابات ====================
 async def show_manage_accounts(update: Update, user_id: int):
     try:
-        accounts = await asyncio.to_thread(db.get_all_site_accounts, user_id)
-        plan = await asyncio.to_thread(db.get_user_plan, user_id)  # "1", "2", "3"
+        accounts = db.get_all_site_accounts(user_id)
+        plan = db.get_user_plan(user_id)  # "1", "2", "3"
         max_accounts = int(plan)
         if not accounts:
             text = "👤 **إدارة الحسابات:**\n\nلا توجد حسابات مضافة. أضف حسابًا للبدء."
@@ -213,7 +195,7 @@ async def show_manage_accounts(update: Update, user_id: int):
         
 async def show_account_detail(update: Update, user_id: int, account_id: int):
     """عرض تفاصيل حساب واحد مع أزرار الإجراءات"""
-    accounts = await asyncio.to_thread(db.get_all_site_accounts, user_id)
+    accounts = db.get_all_site_accounts(user_id)
     acc = None
     for a in accounts:
         if a[0] == account_id:
@@ -249,9 +231,7 @@ async def handle_user_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if context.user_data.get("waiting_for_channel_id"):
         context.user_data.pop("waiting_for_channel_id", None)
-        await asyncio.to_thread(db.save_hunting_channel, user_id, text)
-        if user_id in _db_cache:
-            _db_cache.pop(user_id, None)
+        db.save_hunting_channel(user_id, text)
         keyboard = [[InlineKeyboardButton("⬅️ العودة للإعدادات", callback_data="bot_settings")]]
         await update.message.reply_text(
             f"✅ **تم ربط قناة الصيد بنجاح!**\n\n🆔 معرف القناة المسجل: `{text}`\n\n"
@@ -271,9 +251,7 @@ async def handle_user_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE)
         api_key = text
         context.user_data.pop("waiting_for_apikey", None)
         context.user_data.pop("temp_username", None)
-        await asyncio.to_thread(db.save_site_account_v2, user_id, username, api_key)
-        if user_id in _db_cache:
-            _db_cache.pop(user_id, None)
+        db.save_site_account_v2(user_id, username, api_key)
         keyboard = [[InlineKeyboardButton("⬅️ العودة لإدارة الحسابات", callback_data="manage_accounts")]]
         await update.message.reply_text(
             f"✅ تم إضافة الحساب بنجاح وتفعيله!\n\n👤 اسم المستخدم: `{username}`\n🔑 الـ API Key تم حفظه.",
@@ -305,12 +283,10 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
     elif data.startswith("toggle_site_"):
         acc_id = int(data.split("_")[2])
         try:
-            await asyncio.to_thread(db.toggle_site_account, user_id, acc_id)
-            if user_id in _db_cache:
-                _db_cache.pop(user_id, None)
+            db.toggle_site_account(user_id, acc_id)
         except Exception as e:
             if "MAX_ACTIVE_REACHED" in str(e):
-                plan = await asyncio.to_thread(db.get_user_plan, user_id)
+                plan = db.get_user_plan(user_id)
                 await query.answer(f"❌ خطتك تسمح بتفعيل {plan} حسابات فقط.", show_alert=True)
             else:
                 await query.answer(f"❌ خطأ: {e}", show_alert=True)
@@ -321,13 +297,11 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         
     elif data.startswith("delete_site_"):
         acc_id = int(data.split("_")[2])
-        accounts = await asyncio.to_thread(db.get_all_site_accounts, user_id)
+        accounts = db.get_all_site_accounts(user_id)
         if len(accounts) == 1:
             await query.answer("❌ لا يمكن حذف الحساب الوحيد. أضف حساباً آخر أولاً.", show_alert=True)
             return
-        await asyncio.to_thread(db.delete_site_account, user_id, acc_id)
-        if user_id in _db_cache:
-            _db_cache.pop(user_id, None)
+        db.delete_site_account(user_id, acc_id)
         await query.answer("🗑️ تم حذف الحساب", show_alert=False)
         # العودة إلى قائمة الحسابات بعد الحذف
         await show_manage_accounts(update, user_id)
@@ -345,9 +319,9 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         )
 
     elif data == "add_new_site_account":
-        plan = await asyncio.to_thread(db.get_user_plan, user_id)
+        plan = db.get_user_plan(user_id)
         max_accounts = int(plan)
-        accounts = await asyncio.to_thread(db.get_all_site_accounts, user_id)
+        accounts = db.get_all_site_accounts(user_id)
         if len(accounts) >= max_accounts:
             await query.answer(f"❌ خطتك تسمح بـ {max_accounts} حسابات فقط.", show_alert=True)
             return
@@ -359,16 +333,14 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         return
     elif data.startswith("delete_country_"):
         country_code = data.split("_", 2)[-1]
-        await asyncio.to_thread(db.delete_user_country, user_id, country_code)
-        if user_id in _db_cache:
-            _db_cache.pop(user_id, None)
+        db.delete_user_country(user_id, country_code)
         await query.answer("🗑️ تم حذف الدولة", show_alert=False)
         await show_manage_countries(update, user_id)
         return
     elif data == "start_hunting":
-        active_accounts = await asyncio.to_thread(db.get_active_site_accounts, user_id)
-        channel = await asyncio.to_thread(db.get_hunting_channel, user_id)
-        countries = await asyncio.to_thread(db.get_user_countries, user_id)
+        active_accounts = db.get_active_site_accounts(user_id)
+        channel = db.get_hunting_channel(user_id)
+        countries = db.get_user_countries(user_id)
         if not active_accounts:
             await query.message.reply_text("❌ لا يمكن تشغيل الصيد! ...")
             return
@@ -389,10 +361,10 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         bot_owner_id = user_id
 
         context.job_queue.run_repeating(
-            check_and_hunt_numbers, interval=1, first=1, user_id=user_id,
+            check_and_hunt_numbers, interval=4, first=1, user_id=user_id,
             name=f"hunt_{user_id}"
         )
-        await asyncio.to_thread(db.set_hunting_status, user_id, 1)
+        db.set_hunting_status(user_id, 1)
         accounts_str = "\n".join([f"👤 {u}" for u, _ in active_accounts])
         # تنبيه منبثق بنجاح التشغيل
         await query.answer(
@@ -400,7 +372,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
             show_alert=True
         )
     elif data == "stop_hunting":
-        await asyncio.to_thread(db.set_hunting_status, user_id, 0)
+        db.set_hunting_status(user_id, 0)
         current_jobs = context.job_queue.get_jobs_by_name(f"hunt_{user_id}")
         if current_jobs:
             for job in current_jobs:
@@ -414,26 +386,26 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
 
     elif data.startswith("set_working_"):
         country_code = data.replace("set_working_", "")
-        await asyncio.to_thread(db.update_country_settings, user_id, country_code, number_type="working")
+        db.update_country_settings(user_id, country_code, number_type="working")
         await query.answer("✔️ تم تعيين: شغال فقط", show_alert=False)
         await show_country_settings(update, user_id, country_code)
         return
 
     elif data.startswith("set_banned_"):
         country_code = data.replace("set_banned_", "")
-        await asyncio.to_thread(db.update_country_settings, user_id, country_code, number_type="banned")
+        db.update_country_settings(user_id, country_code, number_type="banned")
         await query.answer("✔️ تم تعيين: محظور فقط", show_alert=False)
         await show_country_settings(update, user_id, country_code)
         return
 
     elif data.startswith("cycle_session_"):
         country_code = data.replace("cycle_session_", "")
-        settings = await asyncio.to_thread(db.get_country_settings, user_id, country_code)
+        settings = db.get_country_settings(user_id, country_code)
         current = settings.get("session_status", "all")
         # الدورة: all -> no_session -> has_session -> all
         next_status = {"all": "no_session", "no_session": "has_session", "has_session": "all"}
         new_status = next_status.get(current, "all")
-        await asyncio.to_thread(db.update_country_settings, user_id, country_code, session_status=new_status)
+        db.update_country_settings(user_id, country_code, session_status=new_status)
         status_names = {"all": "الاثنين معاً", "no_session": "بدون جلسة فقط", "has_session": "لديه جلسة فقط"}
         await query.answer(f"✔️ تم تعيين: {status_names.get(new_status, new_status)}", show_alert=False)
         await show_country_settings(update, user_id, country_code)
@@ -449,7 +421,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         parts = data.split("_")
         country_code = parts[3]
         value = parts[4]
-        await asyncio.to_thread(db.update_country_settings, user_id, country_code, number_type=value)
+        db.update_country_settings(user_id, country_code, number_type=value)
         await query.answer("✔️ تم تحديث نوع الرقم", show_alert=True)
         await show_country_settings(update, user_id, country_code)
         return
@@ -463,7 +435,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         parts = data.split("_")
         country_code = parts[3]
         value = parts[4]
-        await asyncio.to_thread(db.update_country_settings, user_id, country_code, session_status=value)
+        db.update_country_settings(user_id, country_code, session_status=value)
         await query.answer("✔️ تم تحديث حالة الجلسة", show_alert=True)
         await show_country_settings(update, user_id, country_code)
         return
@@ -506,9 +478,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         # استبدال الشرطات السفلية بمسافات
         country_name_with_emoji = country_name_with_emoji.replace("_", " ")
         
-        await asyncio.to_thread(db.add_user_country, user_id, country_code)
-        if user_id in _db_cache:
-            _db_cache.pop(user_id, None)
+        db.add_user_country(user_id, country_code)
         # رسالة منبثقة فقط، بدون تغيير الصفحة
         await query.answer(f"✔️ تمت إضافة {country_name_with_emoji} بنجاح", show_alert=True)
         # لا نغير الصفحة، يبقى المستخدم في نفس قائمة الدول
@@ -525,21 +495,17 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         # استخدام مالك البوت للبحث عن الحساب
         owner_id = user_id
         try:
-            def _get_owner_id():
-                with db.get_connection() as conn:
-                    cursor = conn.cursor()
-                    try:
-                        cursor.execute("SELECT user_id FROM user_bots WHERE token = %s", (context.bot.token,))
-                        row = cursor.fetchone()
-                        return row[0] if row else None
-                    finally:
-                        cursor.close()
-            fetched_owner = await asyncio.to_thread(_get_owner_id)
-            if fetched_owner:
-                owner_id = fetched_owner
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM user_bots WHERE token = %s", (context.bot.token,))
+            row = cursor.fetchone()
+            if row:
+                owner_id = row[0]
+            cursor.close()
+            conn.close()
         except Exception as e:
             logger.error(f"Error querying bot owner by token: {e}")
-        accounts = await asyncio.to_thread(db.get_all_site_accounts, owner_id)
+        accounts = db.get_all_site_accounts(owner_id)
         api_key = None
         for acc_id, acc_username, acc_api_key, _ in accounts:
             if acc_username == username:
@@ -645,7 +611,7 @@ async def show_session_status_options(update: Update, user_id: int, country_code
 # ==================== 6. عرض وإدارة الدول المختارة ====================
 async def show_manage_countries(update: Update, user_id: int):
     """عرض قائمة الدول المختارة مع أيقونات الإعدادات"""
-    countries = await asyncio.to_thread(db.get_user_countries, user_id)
+    countries = db.get_user_countries(user_id)
     if not countries:
         text = "🌍 **لم تقم بإضافة أي دولة بعد.**\n\nاستخدم زر 'اضافه دوله' لتفعيل الصيد من دول معينة."
         keyboard = [[InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="main_menu")]]
@@ -676,7 +642,7 @@ async def show_country_settings(update: Update, user_id: int, country_code: str)
             break
     
     # جلب الإعدادات الحالية
-    settings = await asyncio.to_thread(db.get_country_settings, user_id, country_code)
+    settings = db.get_country_settings(user_id, country_code)
     number_type = settings.get("number_type", "all")
     session_status = settings.get("session_status", "all")
     
@@ -730,237 +696,115 @@ async def show_country_settings(update: Update, user_id: int, country_code: str)
 async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     user_id = job.user_id
-    
-    now = time.perf_counter()
-    cache_age = now - _db_cache_ts.get(user_id, 0)
-    if user_id not in _db_cache or cache_age > DB_CACHE_TTL:
-        active_accounts, channel, countries = await asyncio.gather(
-            asyncio.to_thread(db.get_active_site_accounts, user_id),
-            asyncio.to_thread(db.get_hunting_channel, user_id),
-            asyncio.to_thread(db.get_user_countries, user_id)
-        )
-        _db_cache[user_id] = {"accounts": active_accounts, "channel": channel, "countries": countries}
-        _db_cache_ts[user_id] = now
-    else:
-        active_accounts = _db_cache[user_id]["accounts"]
-        channel = _db_cache[user_id]["channel"]
-        countries = _db_cache[user_id]["countries"]
+    active_accounts = db.get_active_site_accounts(user_id)
+    channel = db.get_hunting_channel(user_id)
+    countries = db.get_user_countries(user_id)
 
     if not active_accounts or not channel or not countries:
         job.schedule_removal()
         return
 
-    try:
-        db_data = await asyncio.to_thread(db.get_bot, user_id)
-        if db_data and len(db_data) >= 4:
-            if db_data[3] == 1:
-                logger.warning(f"[User: {user_id}] محظور")
-                job.schedule_removal()
-                return
-            expires_at = db_data[2]
-            if expires_at:
-                if isinstance(expires_at, str):
-                    expires_at = datetime.fromisoformat(expires_at.replace("Z", ""))
-                if expires_at.replace(tzinfo=None) <= datetime.now(timezone.utc).replace(tzinfo=None):
-                    logger.warning(f"[User: {user_id}] اشتراك منتهي")
-                    job.schedule_removal()
-                    return
-    except Exception as e:
-        logger.error(f"[User: {user_id}] فشل فحص الحالة: {e}")
-
     if user_id not in repeat_tracker:
         repeat_tracker[user_id] = {}
 
-    _clean_country_backoff(user_id)
+    async def process_account_country(username, api_key, country_code):
+        """معالجة دولة واحدة لحساب واحد، تُنفذ بشكل متوازٍ"""
+        clean_country = str(country_code).strip()
+        try:
+            async with semaphore:
+               await asyncio.sleep(0.8) 
+               result = await DurianAPI.order_number_by_name(username, api_key, clean_country, project_id="0257")
+            if not result or result.get("status") != "success":
+                return
+            phone_number = result.get("number")
+            if not phone_number:
+                return
 
-    tasks = []
-    numbers_this_cycle = 0
-    for username, api_key in active_accounts:
-        for country_code in countries:
-            if numbers_this_cycle >= MAX_NUMBERS_PER_CYCLE:
-                break
-            bk = f"{user_id}:{country_code}"
-            if bk in _country_backoff and time.perf_counter() < _country_backoff[bk]["next_retry"]:
-                continue
-            elif bk in _country_backoff:
-                del _country_backoff[bk]
-            numbers_this_cycle += 1
-            tasks.append(_process_and_publish(context, user_id, username, api_key, country_code, channel))
-
-    if tasks:
-        await asyncio.gather(*tasks)
-
-    if user_id in repeat_tracker and len(repeat_tracker[user_id]) > MAX_TRACKED_PHONES:
-        logger.info(f"[User: {user_id}] تنظيف repeat_tracker")
-        repeat_tracker[user_id] = {}
-
-
-def _get_country_info(country_code, phone_number):
-    country_name = country_code.upper()
-    country_flag = "🌐"
-    if country_code.upper() in COUNTRY_INFO:
-        info = COUNTRY_INFO[country_code.upper()]
-        country_name = info["name"]
-        country_flag = info["emoji"]
-    else:
-        for prefix, info in COUNTRY_MAP.items():
-            if phone_number.replace("+", "").startswith(prefix):
+            # --- الفحص السريع (اختياري، يمكن تعطيله مؤقتًا للسرعة) ---
+            status_text = "🔴 حالة غير معروفة"  # افتراضي إذا لم يتم الفحص
+            try:
+                account_checker = await telegram_checker.get_available_account()
+                if account_checker:
+                    check_result = await telegram_checker.check_phone(account_checker, phone_number)
+                    check_status = check_result.get("status")
+                    raw_status = check_result.get("status_text", "")
+                    if check_status in ["NO_SESSION", "HAS_SESSION", "BANNED", "INVALID"]:
+                        if "HAS_SESSION" in raw_status or "محظور" in raw_status:
+                            status_text = f"⚠️ {raw_status}"
+                        elif check_status == "INVALID":
+                            status_text = "⚠️ رقم غير صالح"
+                        else:
+                            status_text = "✅ الرقم بدون جلسة"
+                    else:
+                        status_text = "⚪️ غير معروف / معلق"
+                # إذا لم يكن هناك حساب فاحص، يبقى "🔴 حالة غير معروفة"
+            except Exception as e:
+                logger.warning(f"فحص الرقم {phone_number} فشل: {e}")
+                # يبقى "🔴 حالة غير معروفة"
+            # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة) ---
+            country_name = clean_country.upper()
+            country_flag = "🌐"
+            if clean_country.upper() in COUNTRY_INFO:
+                info = COUNTRY_INFO[clean_country.upper()]
                 country_name = info["name"]
                 country_flag = info["emoji"]
-                break
-    return country_name, country_flag
+            else:
+                # fallback للخريطة القديمة
+                for prefix, info in COUNTRY_MAP.items():
+                    if phone_number.replace("+", "").startswith(prefix):
+                        country_name = info["name"]
+                        country_flag = info["emoji"]
+                        break
 
+            # --- تحديث عداد التكرار ---
+            repeat_tracker[user_id][phone_number] = repeat_tracker[user_id].get(phone_number, 0) + 1
+            repeat_count = repeat_tracker[user_id][phone_number]
 
-async def _update_channel_message(bot, channel_id, msg_id, phone, country_name, country_flag, status_text, repeat_count):
-    text = (
-        f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
-        f"<b>    - الـرقـــــم : <code>{phone}</code></b>\n"
-        f"<b>    - الـدولـة : {country_name} {country_flag}</b>\n"
-        f"<b>    - الـحـالـة : {status_text}</b>\n"
-        f"<b>    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة</b>\n"
-        f"<b>    - الــكـــود : قـيـد الإنـتـظـار ❗️</b>"
-    )
-    try:
-        await bot.edit_message_text(chat_id=channel_id, message_id=msg_id, text=text, parse_mode=ParseMode.HTML)
-    except Exception:
-        pass
+            # --- صياغة الرسالة ---
+            message_text = (
+                        f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
+                        f"<b>    - الـرقـــــم : <code>{phone_number}</code></b>\n"
+                        f"<b>    - الـدولـة : {country_name} {country_flag}</b>\n"
+                        f"<b>    - الـحـالـة : {status_text}</b>\n"
+                        f"<b>    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة</b>\n"
+                        f"<b>    - الــكـــود : قـيـد الإنـتـظـار ❗️</b>"
+                    )
 
+            keyboard = [
+                [
+                    InlineKeyboardButton("- نسبة الوصول .", callback_data=f"rate_{username}_{phone_number}"),
+                    InlineKeyboardButton("- ضعيفه 🧌 .", callback_data=f"weak_{username}_{phone_number}")
+                ],
+                [
+                    InlineKeyboardButton("- طلب الكود .", callback_data=f"code_{username}_{phone_number}"),
+                    InlineKeyboardButton("- فك حظر .", callback_data=f"unban_{username}_{phone_number}")
+                ],
+                [
+                    InlineKeyboardButton("- الغاء الرقم .", callback_data=f"cancel_{username}_{phone_number}")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
-def _mark_country_backoff(user_id, country_code):
-    key = f"{user_id}:{country_code}"
-    entry = _country_backoff.get(key, {"count": 0, "next_retry": 0})
-    entry["count"] += 1
-    backoff = min(COUNTRY_BACKOFF_SECONDS * (entry["count"] ** 1.5), 600)
-    entry["next_retry"] = time.perf_counter() + backoff
-    _country_backoff[key] = entry
-    logger.info(f"[Backoff] {key}: تخطي {backoff:.0f}ث (المرة {entry['count']})")
-
-
-def _clean_country_backoff(user_id):
-    now = time.perf_counter()
-    for k in list(_country_backoff.keys()):
-        if k.startswith(f"{user_id}:") and now >= _country_backoff[k]["next_retry"]:
-            del _country_backoff[k]
-
-
-async def _process_and_publish(context, user_id, username, api_key, country_code, channel):
-    try:
-        clean_country = str(country_code).strip()
-        async with semaphore:
-            result = await DurianAPI.order_number_by_name(username, api_key, clean_country, project_id="0257")
-
-        if not result or result.get("status") != "success":
-            code = result.get("code") if result else None
-            msg = result.get("message", "") if result else ""
-            if code == 906 or "empty" in msg.lower():
-                _mark_country_backoff(user_id, clean_country)
-            return
-
-        phone_number = result.get("number")
-        if not phone_number:
-            return
-
-        repeat_tracker[user_id][phone_number] = repeat_tracker[user_id].get(phone_number, 0) + 1
-        repeat_count = repeat_tracker[user_id][phone_number]
-        country_name, country_flag = _get_country_info(clean_country, phone_number)
-
-        message_text = (
-            f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
-            f"<b>    - الـرقـــــم : <code>{phone_number}</code></b>\n"
-            f"<b>    - الـدولـة : {country_name} {country_flag}</b>\n"
-            f"<b>    - الـحـالـة : ⏳ جاري الفحص...</b>\n"
-            f"<b>    - تـكـرار نـزول الـرقـم : {repeat_count} مـرة</b>\n"
-            f"<b>    - الــكـــود : قـيـد الإنـتـظـار ❗️</b>"
-        )
-
-        keyboard = [
-            [InlineKeyboardButton("- نسبة الوصول .", callback_data=f"rate_{username}_{phone_number}"),
-             InlineKeyboardButton("- ضعيفه 🧌 .", callback_data=f"weak_{username}_{phone_number}")],
-            [InlineKeyboardButton("- طلب الكود .", callback_data=f"code_{username}_{phone_number}"),
-             InlineKeyboardButton("- فك حظر .", callback_data=f"unban_{username}_{phone_number}")],
-            [InlineKeyboardButton("- الغاء الرقم .", callback_data=f"cancel_{username}_{phone_number}")]
-        ]
-
-        sent = await context.bot.send_message(
-            chat_id=channel,
-            text=message_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-        asyncio.create_task(_check_and_update(
-            context.bot, user_id, username, api_key, phone_number,
-            clean_country, country_name, country_flag, channel,
-            sent.message_id, repeat_count
-        ))
-    except Exception as e:
-        logger.error(f"[Publish] {username}/{country_code}: {e}")
-
-
-async def _check_and_update(bot, user_id, username, api_key, phone, country_code, country_name, country_flag, channel, msg_id, repeat_count):
-    async with background_check_semaphore:
-        try:
-            acc = await telegram_checker.get_available_account()
-            if not acc:
-                return
-
-            check_result = await telegram_checker.check_phone(acc, phone)
-            check_status = check_result.get("status")
-            status_text = check_result.get("status_text", "⚪️ غير معروف")
-
-            if check_status in ("FLOOD", "ACCOUNT_DISABLED"):
-                return
-            if check_status == "ERROR":
-                await _update_channel_message(bot, channel, msg_id, phone, country_name, country_flag, "⚪️ فشل الفحص", repeat_count)
-                return
-
-            should_cancel = False
-            try:
-                cs = await asyncio.to_thread(db.get_country_settings, user_id, country_code)
-                ft = cs.get("number_type", "all")
-                sf = cs.get("session_status", "all")
-                if ft != "all" or sf != "all":
-                    if ft == "working" and check_status == "BANNED":
-                        should_cancel = True
-                    elif ft == "banned" and check_status != "BANNED":
-                        should_cancel = True
-                    if sf == "no_session" and check_status == "HAS_SESSION":
-                        should_cancel = True
-                    elif sf == "has_session" and check_status != "HAS_SESSION":
-                        should_cancel = True
-            except Exception:
-                pass
-
-            if should_cancel:
-                try:
-                    await DurianAPI.cancel_number(username, api_key, phone)
-                except Exception:
-                    pass
-                try:
-                    await bot.delete_message(chat_id=channel, message_id=msg_id)
-                except Exception:
-                    pass
-                return
-
-            await _update_channel_message(bot, channel, msg_id, phone, country_name, country_flag, status_text, repeat_count)
+            await context.bot.send_message(
+                chat_id=channel,
+                text=message_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup
+            )
         except Exception as e:
-            logger.error(f"[BG] {phone}: {e}")
+            logger.error(f"Error for user {user_id}, account {username}, country {country_code}: {e}")
+
+    # بناء قائمة المهام لجميع الحسابات والدول
+    tasks = []
+    for username, api_key in active_accounts:
+        for country_code in countries:
+            tasks.append(process_account_country(username, api_key, country_code))
+
+    # تنفيذ جميع المهام بشكل متوازٍ
+    await asyncio.gather(*tasks)
 
 def create_user_app(token: str):
-    request_config = HTTPXRequest(
-        connect_timeout=10.0,
-        read_timeout=30.0,
-        write_timeout=30.0,
-        pool_timeout=5.0,
-        connection_pool_size=8,  # اتصالات HTTP دائمة
-    )
-    app = (
-        Application.builder()
-        .token(token)
-        .request(request_config)
-        .concurrent_updates(True)  # معالجة متوازية لطلبات الأزرار
-        .build()
-    )
+    app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start_user_bot))
     app.add_handler(CallbackQueryHandler(user_bot_callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_inputs))
