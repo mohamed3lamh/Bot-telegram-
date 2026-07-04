@@ -4,7 +4,9 @@ import logging
 from telethon import functions, types
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
-    SessionPasswordNeededError, PhoneNumberInvalidError
+    SessionPasswordNeededError, PhoneNumberInvalidError,
+    PhoneMigrateError, NetworkMigrateError, UserMigrateError,
+    PhoneNumberUnoccupiedError
 )
 from .telegram_client import telegram_client_manager, SessionUnauthorizedError
 from .account_manager import account_manager
@@ -57,6 +59,13 @@ class TelegramChecker:
                 "phone": phone,
                 "status_text": "⚠️ الرقم لديه جلسة"
             }
+        except PhoneNumberUnoccupiedError:
+            # الرقم غير مسجل في تليجرام → بدون جلسة بالتأكيد
+            return {
+                "status": "NO_SESSION",
+                "phone": phone,
+                "status_text": "✅ الرقم بدون جلسة"
+            }
         except PhoneNumberBannedError:
             # الرقم طار وتم حظره من شركة التلغرام تماماً
             return {
@@ -76,8 +85,77 @@ class TelegramChecker:
             return {
                 "status": "FLOOD",
                 "seconds": e.seconds,
-                "phone": phone
+                "phone": phone,
+                "status_text": f"🚫 حظر مؤقت {e.seconds} ثانية"
             }
+        except (PhoneMigrateError, NetworkMigrateError, UserMigrateError) as e:
+            # الرقم مسجل في DC مختلف — نفصل ونحاول مجدداً عبر DC الصحيح
+            new_dc = getattr(e, 'new_dc', '?')
+            logger.info(
+                f"[Checker] #{account['id']}: الرقم {phone} في DC {new_dc} — إعادة الاتصال بالـ DC الصحيح..."
+            )
+            try:
+                await telegram_client_manager.disconnect_client(account["id"])
+            except Exception:
+                pass
+            try:
+                client2 = await telegram_client_manager.get_client(account)
+                t_req = time.perf_counter()
+                await asyncio.wait_for(client2.send_code_request(phone), timeout=15.0)
+                logger.info(
+                    f"[Checker] #{account['id']}: نجح send_code_request بعد DC migration في {time.perf_counter() - t_req:.3f}s"
+                )
+                return {
+                    "status": "NO_SESSION",
+                    "phone": phone,
+                    "status_text": "✅ الرقم بدون جلسة"
+                }
+            except SessionPasswordNeededError:
+                return {
+                    "status": "HAS_SESSION",
+                    "phone": phone,
+                    "status_text": "⚠️ الرقم لديه جلسة"
+                }
+            except PhoneNumberUnoccupiedError:
+                return {
+                    "status": "NO_SESSION",
+                    "phone": phone,
+                    "status_text": "✅ الرقم بدون جلسة"
+                }
+            except PhoneNumberBannedError:
+                return {
+                    "status": "BANNED",
+                    "phone": phone,
+                    "status_text": "📵 مـحـظـور"
+                }
+            except PhoneNumberInvalidError:
+                return {
+                    "status": "INVALID",
+                    "phone": phone,
+                    "status_text": "⚠️ رقم غير صالح"
+                }
+            except FloodWaitError as fe:
+                await flood_manager.set_flood(account["id"], fe.seconds)
+                return {
+                    "status": "FLOOD",
+                    "seconds": fe.seconds,
+                    "phone": phone,
+                    "status_text": f"🚫 حظر مؤقت {fe.seconds} ثانية"
+                }
+            except Exception as retry_e:
+                logger.error(
+                    f"[Checker] #{account['id']}: فشل إعادة المحاولة بعد DC migration: {retry_e}"
+                )
+                try:
+                    await telegram_client_manager.disconnect_client(account["id"])
+                except Exception:
+                    pass
+                return {
+                    "status": "ERROR",
+                    "error": str(retry_e),
+                    "phone": phone,
+                    "status_text": f"⚪️ خطأ: DC_retry ({type(retry_e).__name__}: {retry_e})"
+                }
         except Exception as e:
             # في حالة حدوث خطأ غير متوقع، قد يكون الاتصال قد تضرر، فنفصله للتأكد من إعادة بنائه في المرة القادمة
             try:
