@@ -95,25 +95,30 @@ class TelegramChecker:
                 "status_text": f"🚫 حظر مؤقت {e.seconds} ثانية"
             }
         except (PhoneMigrateError, NetworkMigrateError, UserMigrateError) as e:
-            # الرقم مسجل في DC مختلف — نفصل ونحاول مجدداً عبر DC الصحيح
+            # الرقم مسجل في DC مختلف — ننقل نفس client للـ DC الصحيح بدلاً من إنشاء client جديد
             new_dc = getattr(e, 'new_dc', '?')
             logger.info(
-                f"[Checker] #{account['id']}: الرقم {phone} في DC {new_dc} — إعادة الاتصال بالـ DC الصحيح..."
+                f"[Checker] #{account['id']}: الرقم {phone} في DC {new_dc} — ترحيل الاتصال..."
             )
             try:
-                await telegram_client_manager.disconnect_client(account["id"])
-            except Exception:
-                pass
-            try:
-                client2 = await telegram_client_manager.get_client(account)
+                await client.disconnect()
+                # العثور على معلومات DC في الجلسة وتحديثها
+                try:
+                    for dc_opt in getattr(client.session, 'dc_options', []):
+                        if getattr(dc_opt, 'id', None) == new_dc:
+                            client.session.set_dc(dc_opt.id, dc_opt.ip_address, dc_opt.port)
+                            break
+                except Exception:
+                    pass
+                await client.connect()
                 t_req = time.perf_counter()
-                await asyncio.wait_for(client2.send_code_request(phone), timeout=15.0)
+                await asyncio.wait_for(client.send_code_request(phone), timeout=15.0)
                 logger.info(
                     f"[Checker] #{account['id']}: نجح send_code_request بعد DC migration في {time.perf_counter() - t_req:.3f}s"
                 )
                 # نتحقق من حالة تسجيل الرقم في تيليجرام
                 try:
-                    check_result = await client2(functions.contacts.CheckPhoneRequest(phone_number=phone))
+                    check_result = await client(functions.contacts.CheckPhoneRequest(phone_number=phone))
                     phone_registered = getattr(check_result, 'phone_registered', None)
                 except Exception:
                     phone_registered = None
@@ -155,6 +160,19 @@ class TelegramChecker:
                     "phone": phone,
                     "status_text": f"🚫 حظر مؤقت {fe.seconds} ثانية"
                 }
+            except (PhoneMigrateError, NetworkMigrateError, UserMigrateError):
+                logger.error(
+                    f"[Checker] #{account['id']}: فشل DC migration مرتين للرقم {phone}"
+                )
+                try:
+                    await telegram_client_manager.disconnect_client(account["id"])
+                except Exception:
+                    pass
+                return {
+                    "status": "ERROR",
+                    "phone": phone,
+                    "status_text": "⚠️ تعذر فحص الرقم (خطأ DC)"
+                }
             except Exception as retry_e:
                 logger.error(
                     f"[Checker] #{account['id']}: فشل إعادة المحاولة بعد DC migration: {retry_e}"
@@ -165,9 +183,8 @@ class TelegramChecker:
                     pass
                 return {
                     "status": "ERROR",
-                    "error": str(retry_e),
                     "phone": phone,
-                    "status_text": f"⚪️ خطأ: DC_retry ({type(retry_e).__name__}: {retry_e})"
+                    "status_text": "⚠️ تعذر فحص الرقم"
                 }
         except Exception as e:
             # في حالة حدوث خطأ غير متوقع، قد يكون الاتصال قد تضرر، فنفصله للتأكد من إعادة بنائه في المرة القادمة
