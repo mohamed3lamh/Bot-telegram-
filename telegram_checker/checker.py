@@ -4,7 +4,7 @@ import logging
 from telethon import functions, types
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
-    SessionPasswordNeededError, PhoneNumberInvalidError,
+    PhoneNumberInvalidError,
     PhoneMigrateError, NetworkMigrateError, UserMigrateError,
     PhoneNumberUnoccupiedError
 )
@@ -46,18 +46,24 @@ class TelegramChecker:
                 f"[PERF_TRACE] [Checker ID: {account.get('id')}] send_code_request duration: "
                 f"{t_send_code_end - t_send_code_start:.4f}s"
             )
-            # إذا مر السطر السابق بدون أخطاء، فالرقم مفتوح وجاهز تماماً بدون باسورد
+            # إذا مر السطر السابق بدون أخطاء، فالرقم يستقبل الكود
+            # نتحقق من حالة تسجيل الرقم في تيليجرام
+            try:
+                check_result = await client(functions.contacts.CheckPhoneRequest(phone_number=phone))
+                phone_registered = getattr(check_result, 'phone_registered', None)
+            except Exception:
+                phone_registered = None
+
+            if phone_registered:
+                return {
+                    "status": "HAS_SESSION",
+                    "phone": phone,
+                    "status_text": "⚠️ الرقم لديه جلسة"
+                }
             return {
                 "status": "NO_SESSION",
                 "phone": phone,
                 "status_text": "✅ الرقم بدون جلسة"
-            }
-        except SessionPasswordNeededError:
-            # الرقم شغال وموجود ولكن صاحبه وضع كلمة سر التحقق بخطوتين
-            return {
-                "status": "HAS_SESSION",
-                "phone": phone,
-                "status_text": "⚠️ الرقم لديه جلسة"
             }
         except PhoneNumberUnoccupiedError:
             # الرقم غير مسجل في تليجرام → بدون جلسة بالتأكيد
@@ -105,16 +111,23 @@ class TelegramChecker:
                 logger.info(
                     f"[Checker] #{account['id']}: نجح send_code_request بعد DC migration في {time.perf_counter() - t_req:.3f}s"
                 )
+                # نتحقق من حالة تسجيل الرقم في تيليجرام
+                try:
+                    check_result = await client2(functions.contacts.CheckPhoneRequest(phone_number=phone))
+                    phone_registered = getattr(check_result, 'phone_registered', None)
+                except Exception:
+                    phone_registered = None
+
+                if phone_registered:
+                    return {
+                        "status": "HAS_SESSION",
+                        "phone": phone,
+                        "status_text": "⚠️ الرقم لديه جلسة"
+                    }
                 return {
                     "status": "NO_SESSION",
                     "phone": phone,
                     "status_text": "✅ الرقم بدون جلسة"
-                }
-            except SessionPasswordNeededError:
-                return {
-                    "status": "HAS_SESSION",
-                    "phone": phone,
-                    "status_text": "⚠️ الرقم لديه جلسة"
                 }
             except PhoneNumberUnoccupiedError:
                 return {
