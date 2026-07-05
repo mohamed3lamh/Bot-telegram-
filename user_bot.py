@@ -731,8 +731,8 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                     raw_status = check_result.get("status_text", "")
                     
                     if check_status == "CODE_SENT":
-                        status_text = "📨 تم إرسال كود التحقق"
-                    elif check_status == "UNREGISTERED":
+                        status_text = "🔐 لديه جلسة"   # افتراض أن الرقم مسجل
+                    elif check_status == "NO_SESSION" or check_status == "UNREGISTERED":
                         status_text = "✅ بدون جلسة"
                     elif check_status == "REGISTERED_2FA":
                         status_text = "🔐 لديه جلسة (2FA)"
@@ -740,13 +740,11 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                         status_text = raw_status or "🚯 محظور"
                     elif check_status == "INVALID":
                         status_text = "⚠️ رقم غير صالح"
-                    elif check_status == "FLOOD":
-                        status_text = f"⏳ محظور مؤقتاً ({check_result.get('seconds', '?')}s)"
                     else:
                         status_text = "⚪️ غير معروف"
             except Exception as e:
                 logger.warning(f"فحص الرقم {phone_number} فشل: {e}")
-                # يبقى "🔴 حالة غير معروفة"
+                
             # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة) ---
             country_name = clean_country.upper()
             country_flag = "🌐"
