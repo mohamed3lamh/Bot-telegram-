@@ -25,7 +25,7 @@ class TelegramChecker:
             await client.disconnect()
 
     async def check_phone(self, account, phone):
-        """فحص حالة الرقم بشكل آمن بدون ادعاء حالة جلسة غير مؤكدة."""
+        """فحص حالة الرقم بشكل دقيق مع التمييز بين بدون جلسة ولديه جلسة"""
         try:
             client = await telegram_client_manager.get_client(account)
 
@@ -38,6 +38,64 @@ class TelegramChecker:
             }
 
         try:
+            # الخطوة 1: التحقق مما إذا كان الرقم مسجلاً على تيليجرام (بدون إرسال كود)
+            try:
+                result = await client(
+                    functions.auth.CheckPasswordRequest(phone)
+                )
+            except Exception:
+                # في بعض الإصدارات، الدالة الصحيحة هي CheckPhoneRequest
+                pass
+            
+            # استخدام CheckPhoneRequest للتحقق من وجود الحساب
+            try:
+                check_result = await client(
+                    functions.auth.CheckPhoneRequest(phone)
+                )
+                # إذا وصلنا هنا بدون خطأ، فالرقم مسجل (لديه جلسة)
+                # الآن نتحقق مما إذا كان يتطلب 2FA
+                try:
+                    await client.send_code_request(phone)
+                    await self._safe_disconnect(client)
+                    return {
+                        "status": "HAS_SESSION",
+                        "phone": phone,
+                        "status_text": "🔐 لديه جلسة"
+                    }
+                except SessionPasswordNeededError:
+                    await self._safe_disconnect(client)
+                    return {
+                        "status": "REGISTERED_2FA",
+                        "phone": phone,
+                        "status_text": "🔐 لديه جلسة (2FA)"
+                    }
+                except PhoneNumberBannedError:
+                    await self._safe_disconnect(client)
+                    return {
+                        "status": "BANNED",
+                        "phone": phone,
+                        "status_text": "🚯 محظور"
+                    }
+                except Exception:
+                    await self._safe_disconnect(client)
+                    return {
+                        "status": "HAS_SESSION",
+                        "phone": phone,
+                        "status_text": "🔐 لديه جلسة"
+                    }
+            except PhoneNumberUnoccupiedError:
+                # الرقم غير مسجل (بدون جلسة)
+                await self._safe_disconnect(client)
+                return {
+                    "status": "NO_SESSION",
+                    "phone": phone,
+                    "status_text": "✅ بدون جلسة"
+                }
+            except Exception:
+                # فشل CheckPhoneRequest، نحاول إرسال كود
+                pass
+
+            # الخطوة 2: إذا فشلت الخطوة السابقة، نستخدم send_code_request كالعادة
             await asyncio.wait_for(
                 client.send_code_request(phone),
                 timeout=REQUEST_TIMEOUT_SECONDS
@@ -51,26 +109,20 @@ class TelegramChecker:
                 "status_text": "📨 تم إرسال كود التحقق (رقم موجود أو قابل للتسجيل)"
             }
 
-        # ----------------------------
-        # 🔥 تحسين الحالة غير المسجلة
-        # ----------------------------
         except PhoneNumberUnoccupiedError:
             await self._safe_disconnect(client)
             return {
-                "status": "UNREGISTERED",
+                "status": "NO_SESSION",
                 "phone": phone,
-                "status_text": "❌ رقم غير مسجل على تيليجرام"
+                "status_text": "✅ بدون جلسة"
             }
 
-        # ----------------------------
-        # 🔥 2FA مفعل (ليس "جلسة مؤكدة")
-        # ----------------------------
         except SessionPasswordNeededError:
             await self._safe_disconnect(client)
             return {
                 "status": "REGISTERED_2FA",
                 "phone": phone,
-                "status_text": "🔐 الحساب موجود (يتطلب كلمة مرور 2FA)"
+                "status_text": "🔐 لديه جلسة (2FA)"
             }
 
         except PhoneNumberBannedError:
@@ -108,27 +160,29 @@ class TelegramChecker:
                 "status_text": "⏳ انتهت مهلة الفحص"
             }
 
-        # ----------------------------
-        # 🔥 تحسين UNKNOWN (بدون كسر النظام)
-        # ----------------------------
         except Exception as e:
             await self._safe_disconnect(client)
 
             err_text = str(e)
 
-            # محاولة تصنيف ذكي بدون تغيير البنية
             if "PHONE_NUMBER_OCCUPIED" in err_text:
-                status = "CODE_SENT"
+                status = "HAS_SESSION"
+                status_text = "🔐 لديه جلسة"
             elif "FLOOD" in err_text:
                 status = "FLOOD"
+                status_text = None
+            elif "PHONE_NUMBER_UNOCCUPIED" in err_text:
+                status = "NO_SESSION"
+                status_text = "✅ بدون جلسة"
             else:
                 status = "ERROR"
+                status_text = "⚪️ غير معروف / معلق"
 
             return {
                 "status": status,
                 "error": err_text,
                 "phone": phone,
-                "status_text": "⚪️ غير معروف / معلق" if status == "ERROR" else None
+                "status_text": status_text
             }
 
     async def get_available_account(self):
