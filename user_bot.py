@@ -722,23 +722,28 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
 
             # --- الفحص السريع (اختياري، يمكن تعطيله مؤقتًا للسرعة) ---
             status_text = "🔴 حالة غير معروفة"  # افتراضي إذا لم يتم الفحص
+            status_text = "🔴 حالة غير معروفة"
             try:
                 account_checker = await telegram_checker.get_available_account()
                 if account_checker:
                     check_result = await telegram_checker.check_phone(account_checker, phone_number)
                     check_status = check_result.get("status")
                     raw_status = check_result.get("status_text", "")
-                    if check_status in ["CODE_SENT", "NO_SESSION"]:
-                        status_text = raw_status or "📨 تم إرسال كود التحقق"
-                    elif check_status == "HAS_SESSION":
-                        status_text = f"⚠️ {raw_status}" if raw_status else "⚠️ الحساب يتطلب كلمة مرور"
+                    
+                    if check_status == "CODE_SENT":
+                        status_text = "📨 تم إرسال كود التحقق"
+                    elif check_status == "UNREGISTERED":
+                        status_text = "✅ بدون جلسة"
+                    elif check_status == "REGISTERED_2FA":
+                        status_text = "🔐 لديه جلسة (2FA)"
                     elif check_status == "BANNED":
-                        status_text = f"⚠️ {raw_status}" if raw_status else "🚯 محظور"
+                        status_text = raw_status or "🚯 محظور"
                     elif check_status == "INVALID":
                         status_text = "⚠️ رقم غير صالح"
+                    elif check_status == "FLOOD":
+                        status_text = f"⏳ محظور مؤقتاً ({check_result.get('seconds', '?')}s)"
                     else:
-                        status_text = "⚪️ غير معروف / معلق"
-                # إذا لم يكن هناك حساب فاحص، يبقى "🔴 حالة غير معروفة"
+                        status_text = "⚪️ غير معروف"
             except Exception as e:
                 logger.warning(f"فحص الرقم {phone_number} فشل: {e}")
                 # يبقى "🔴 حالة غير معروفة"
