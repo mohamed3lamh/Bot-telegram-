@@ -25,7 +25,7 @@ class TelegramChecker:
             await client.disconnect()
 
     async def check_phone(self, account, phone):
-        """فحص حالة الرقم بدقة: بدون جلسة، لديه جلسة، محظور، إلخ."""
+        """فحص دقيق باستخدام CheckPhoneRequest للتمييز بين مسجل وغير مسجل"""
         try:
             client = await telegram_client_manager.get_client(account)
 
@@ -38,20 +38,27 @@ class TelegramChecker:
             }
 
         try:
-            # الخطوة 1: التحقق من وجود الحساب على تيليجرام باستخدام get_entity
+            # --- الخطوة الحاسمة: استخدام CheckPhoneRequest ---
             try:
-                entity = await client.get_entity(phone)
-                # إذا نجح، الرقم مسجل (لديه جلسة)
+                # هذه الدالة ترجع True إذا كان الرقم مسجلاً،
+                # وترفع PhoneNumberUnoccupiedError إذا لم يكن مسجلاً
+                await client(functions.auth.CheckPasswordRequest(phone))
                 is_registered = True
-            except (ValueError, PhoneNumberUnoccupiedError):
-                # الرقم غير مسجل (بدون جلسة)
+            except PhoneNumberUnoccupiedError:
                 is_registered = False
-            except Exception as e:
-                # خطأ غير متوقع في get_entity، نحاول send_code_request كبديل
-                is_registered = None
+            except Exception:
+                # بعض الإصدارات تتطلب CheckPhoneRequest بدلاً من CheckPasswordRequest
+                try:
+                    await client(functions.auth.CheckPhoneRequest(phone))
+                    is_registered = True
+                except PhoneNumberUnoccupiedError:
+                    is_registered = False
+                except Exception:
+                    # فشل التحقق، نكمل بـ send_code_request
+                    is_registered = None
 
             if is_registered is False:
-                # بالتأكيد بدون جلسة
+                # بالتأكيد غير مسجل
                 await self._safe_disconnect(client)
                 return {
                     "status": "NO_SESSION",
@@ -59,37 +66,27 @@ class TelegramChecker:
                     "status_text": "✅ بدون جلسة"
                 }
 
-            # الخطوة 2: إذا كان مسجلاً أو غير معروف، أرسل كود التحقق لتصنيف إضافي
+            # إذا كان مسجلاً أو غير معروف، نرسل كود للتصنيف الإضافي
             try:
                 await asyncio.wait_for(
                     client.send_code_request(phone),
                     timeout=REQUEST_TIMEOUT_SECONDS
                 )
-                # إذا وصلنا هنا، تم إرسال الكود بنجاح
+                # تم إرسال الكود بنجاح
                 await self._safe_disconnect(client)
 
                 if is_registered is True:
-                    # مسجل وتم إرسال الكود -> لديه جلسة
                     return {
                         "status": "HAS_SESSION",
                         "phone": phone,
                         "status_text": "🔐 لديه جلسة"
                     }
                 else:
-                    # غير معروف التسجيل لكن تم إرسال الكود (نادر)
                     return {
                         "status": "CODE_SENT",
                         "phone": phone,
                         "status_text": "📨 تم إرسال كود التحقق"
                     }
-
-            except PhoneNumberUnoccupiedError:
-                await self._safe_disconnect(client)
-                return {
-                    "status": "NO_SESSION",
-                    "phone": phone,
-                    "status_text": "✅ بدون جلسة"
-                }
 
             except SessionPasswordNeededError:
                 await self._safe_disconnect(client)
@@ -136,29 +133,14 @@ class TelegramChecker:
 
             except Exception as e:
                 await self._safe_disconnect(client)
-                err_text = str(e)
-                if "PHONE_NUMBER_UNOCCUPIED" in err_text:
-                    return {
-                        "status": "NO_SESSION",
-                        "phone": phone,
-                        "status_text": "✅ بدون جلسة"
-                    }
-                elif "PHONE_NUMBER_OCCUPIED" in err_text:
-                    return {
-                        "status": "HAS_SESSION",
-                        "phone": phone,
-                        "status_text": "🔐 لديه جلسة"
-                    }
-                else:
-                    return {
-                        "status": "ERROR",
-                        "error": err_text,
-                        "phone": phone,
-                        "status_text": "⚪️ غير معروف / معلق"
-                    }
+                return {
+                    "status": "ERROR",
+                    "error": str(e),
+                    "phone": phone,
+                    "status_text": "⚪️ غير معروف / معلق"
+                }
 
         except Exception as e:
-            # خطأ عام
             await self._safe_disconnect(client)
             return {
                 "status": "ERROR",
