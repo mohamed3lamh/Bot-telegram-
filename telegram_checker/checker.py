@@ -81,14 +81,20 @@ class TelegramChecker:
             }
 
         except Exception as e:
+            logger.error("=" * 70)
+            logger.error(f"UNKNOWN TELEGRAM ERROR أثناء فحص الرقم: {phone}")
+            logger.error(f"TYPE : {type(e).__name__}")
+            logger.error(f"REPR : {repr(e)}")
+            logger.error(f"STR  : {str(e)}")
+            logger.exception("FULL TRACEBACK")
+            logger.error("=" * 70)
+
             try:
                 await telegram_client_manager.disconnect_client(account["id"])
             except Exception:
                 pass
 
-            logger.error(f"[UNKNOWN ERROR] {type(e)} | {e}")
-
-            # أي شيء غير معروف = مسجل (حسب منطقك النهائي)
+            # مؤقتاً نُبقي نفس منطقك حتى نعرف الخطأ الحقيقي
             return {
                 "status": "REGISTERED",
                 "phone": phone,
