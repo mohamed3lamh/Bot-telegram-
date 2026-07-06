@@ -41,7 +41,7 @@ class BotManager:
             # إطلاق حلقة الاستماع الصحيحة في الخلفية لضمان عدم تعليق البوت
             self.running_tasks[user_id] = asyncio.create_task(self._run_app_loop(user_id))
             
-            db.set_status(user_id, 1)
+            await asyncio.to_thread(db.set_status, user_id, 1)
             logger.info(f"✅ تم تشغيل البوت الفرعي بنجاح للمستخدم: {user_id}")
             return True
         except Exception as e:
@@ -80,7 +80,7 @@ class BotManager:
             # تنظيف الذاكرة في كل الأحوال
             self.running_tasks.pop(user_id, None)
             self.running_apps.pop(user_id, None)
-            db.set_status(user_id, 0)
+            await asyncio.to_thread(db.set_status, user_id, 0)
             
         logger.info(f"🛑 تم إيقاف البوت وتحرير مساحته للمرسل: {user_id}")
         return True
@@ -92,7 +92,7 @@ class BotManager:
     async def restore_active_bots(self):
         """استعادة كافة البوتات التي كانت تعمل قبل إعادة تشغيل السيرفر"""
         try:
-            active_bots = db.get_all_active_bots()
+            active_bots = await asyncio.to_thread(db.get_all_active_bots)
             logger.info(f"جاري استعادة {len(active_bots)} من البوتات النشطة...")
             for user_id, token in active_bots:
                 # تشغيل كل بوت في مهمة مستقلة منفصلة
