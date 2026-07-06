@@ -1,15 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import database
-
-
-def _normalize_dt(value):
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
-    return value
+import asyncio
 
 class FloodManager:
 
@@ -17,7 +8,7 @@ class FloodManager:
         """
         التحقق من حالة الحظر المؤقت (FloodWait).
         """
-        flood_until = _normalize_dt(database.get_account_flood(account_id))
+        flood_until = await asyncio.to_thread(database.get_account_flood, account_id)
         if not flood_until:
             return False
         return datetime.now(timezone.utc) < flood_until
@@ -26,26 +17,19 @@ class FloodManager:
         """
         عند دخول الحساب FloodWait.
         """
-
         flood_until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
-
-        database.set_account_flood(
-            account_id,
-            flood_until
-        )
+        await asyncio.to_thread(database.set_account_flood, account_id, flood_until)
 
     async def account_used(self, account_id):
         """
         زيادة عداد الفحص.
         """
-
-        database.increase_account_checks(account_id)
+        await asyncio.to_thread(database.increase_account_checks, account_id)
 
     async def account_ok(self, account_id):
         """
         حالياً لا نحتاج أي شيء هنا.
         """
-
         return True
 
 

@@ -61,15 +61,15 @@ async def send_number_report_callback(result, context: ContextTypes.DEFAULT_TYPE
     # الأزرار الشفافة التفاعلية الخمسة المنسقة كما في الصور
     keyboard = [
         [
-            InlineKeyboardButton("- نسبة الوصول .", callback_data=f"rate|{phone}"),
-            InlineKeyboardButton("- ضعيفه 🧌 .", callback_data=f"weak|{phone}")
+            InlineKeyboardButton("- نسبة الوصول .", callback_data=f"rate_{phone}"),
+            InlineKeyboardButton("- ضعيفه 🧌 .", callback_data=f"weak_{phone}")
         ],
         [
-            InlineKeyboardButton("- طلب الكود .", callback_data=f"code|{phone}"),
-            InlineKeyboardButton("- فك حظر .", callback_data=f"unban|{phone}")
+            InlineKeyboardButton("- طلب الكود .", callback_data=f"code_{phone}"),
+            InlineKeyboardButton("- فك حظر .", callback_data=f"unban_{phone}")
         ],
         [
-            InlineKeyboardButton("- الغاء الرقم .", callback_data=f"cancel|{phone}")
+            InlineKeyboardButton("- الغاء الرقم .", callback_data=f"cancel_{phone}")
         ]
     ]
     

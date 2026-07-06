@@ -1,33 +1,35 @@
 from database import get_connection
 from datetime import datetime, timezone
-
-
-def _normalize_dt(value):
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
-    return value
+import time
+import asyncio
 
 class AccountManager:
     def __init__(self):
-        pass
+        self._accounts_cache = None
+        self._accounts_cache_ts = 0
+        self._ACCOUNTS_CACHE_TTL = 15  # ثانية
 
     async def get_all_accounts(self):
-        """ جلب جميع حسابات تيليجرام المفعلة. """
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT id, api_id, api_hash, string_session, is_active, flood_until
-            FROM telegram_accounts
-            WHERE is_active = TRUE
-            ORDER BY id ASC
-        """)
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+        """ جلب جميع حسابات تيليجرام المفعلة (مع كاش 15 ثانية). """
+        now = time.monotonic()
+        if self._accounts_cache is not None and (now - self._accounts_cache_ts) < self._ACCOUNTS_CACHE_TTL:
+            return self._accounts_cache
+
+        def _fetch():
+            with get_connection() as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute("""
+                        SELECT id, api_id, api_hash, string_session, is_active, flood_until
+                        FROM telegram_accounts
+                        WHERE is_active = TRUE
+                        ORDER BY id ASC
+                    """)
+                    return cur.fetchall()
+                finally:
+                    cur.close()
+
+        rows = await asyncio.to_thread(_fetch)
         
         accounts = []
         for row in rows:
@@ -39,7 +41,15 @@ class AccountManager:
                 "is_active": row[4],
                 "flood_until": row[5]
             })
+
+        self._accounts_cache = accounts
+        self._accounts_cache_ts = now
         return accounts
+
+    def invalidate_accounts_cache(self):
+        """ إبطال الكاش فوراً (يُستخدم عند تعطيل حساب أو تغيير حالته). """
+        self._accounts_cache = None
+        self._accounts_cache_ts = 0
 
     async def get_available_account(self):
         """ يرجع أول حساب صالح للاستخدام (ليس معطل وليس داخل FloodWait). """
@@ -49,7 +59,7 @@ class AccountManager:
             
         now = datetime.now(timezone.utc)
         for account in accounts:
-            flood_until = _normalize_dt(account["flood_until"])
+            flood_until = account["flood_until"]
             # إذا الحساب غير داخل FloodWait
             if flood_until is None:
                 return account
@@ -68,31 +78,39 @@ class AccountManager:
         now = datetime.now(timezone.utc)
         available = []
         for account in accounts:
-            flood_until = _normalize_dt(account["flood_until"])
+            flood_until = account["flood_until"]
             if flood_until is None or flood_until <= now:
                 available.append(account)
         return available
 
     async def disable_account(self, account_id):
         """ تعطيل الحساب. """
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE telegram_accounts SET is_active = FALSE WHERE id=%s
-        """, (account_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
+        def _disable():
+            with get_connection() as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute("""
+                        UPDATE telegram_accounts SET is_active = FALSE WHERE id=%s
+                    """, (account_id,))
+                    conn.commit()
+                finally:
+                    cur.close()
+        await asyncio.to_thread(_disable)
+        self.invalidate_accounts_cache()  # إبطال الكاش فوراً
 
     async def enable_account(self, account_id):
         """ إعادة تفعيل الحساب. """
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE telegram_accounts SET is_active = TRUE WHERE id=%s
-        """, (account_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
+        def _enable():
+            with get_connection() as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute("""
+                        UPDATE telegram_accounts SET is_active = TRUE WHERE id=%s
+                    """, (account_id,))
+                    conn.commit()
+                finally:
+                    cur.close()
+        await asyncio.to_thread(_enable)
+        self.invalidate_accounts_cache()  # إبطال الكاش فوراً
 
 account_manager = AccountManager()
