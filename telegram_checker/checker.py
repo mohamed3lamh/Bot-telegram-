@@ -53,7 +53,7 @@ class TelegramChecker:
             return {
                 "status": "REGISTERED",
                 "phone": phone,
-                "status_text": "📨 الرقم مسجل على تيليجرام"
+                "status_text": "⚠️ الرقم مسجل على تيليجرام"
             }
 
         except PhoneNumberInvalidError:
@@ -61,7 +61,7 @@ class TelegramChecker:
             return {
                 "status": "INVALID",
                 "phone": phone,
-                "status_text": "❌ غير موجود / رقم غير صالح"
+                "status_text": "✅ الرقم غير مسجل على تيليجرام"
             }
 
         except PhoneNumberBannedError:
