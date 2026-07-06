@@ -166,7 +166,10 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_dashboard(update, user_id, user_name)
 
 async def show_dashboard(update: Update, user_id: int, user_name: str):
-    days_left = "36 يوم"
+    # ملاحظة: كنا نعرض "36 يوم" كقيمة افتراضية وهمية حتى عند عدم توفر أي بيانات اشتراك حقيقية،
+    # مما يوهم المستخدم برصيد أيام غير موجود فعلياً. الآن نعرض حالة صريحة "غير معروف/لا يوجد اشتراك"
+    # بدل رقم مُخترَع يبدو حقيقياً.
+    days_left = "غير مشترك"
     status = "⚪️ غير مربوط"
     try:
         db_data = await asyncio.to_thread(db.get_bot, user_id)
@@ -178,8 +181,9 @@ async def show_dashboard(update: Update, user_id: int, user_name: str):
                     expires_at = datetime.fromisoformat(expires_at.replace("Z", ""))
                 delta = expires_at.replace(tzinfo=None) - datetime.now(timezone.utc).replace(tzinfo=None)
                 days_left = f"{max(0, delta.days)} يوم"
-    except Exception:
-        days_left = "36 يوم"
+    except Exception as e:
+        logger.error(f"[User: {user_id}] فشل جلب بيانات الاشتراك لعرضها في لوحة التحكم: {e}")
+        days_left = "تعذر التحقق حالياً"
 
     text = (
         f"👤 ⪪ حياك الله يا {user_name} 🦾، أهلاً وسهلاً ومرحباً بك.\n\n"
@@ -649,9 +653,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer("غير مصرح", show_alert=True)
                 return
             target_id = int(query.data.split("_")[2])
-            pending = await asyncio.to_thread(db.get_pending_subscription, target_id)
+            # نستخدم claim_pending_subscription (قراءة + حذف ذريّان معاً عبر DELETE...RETURNING)
+            # بدل get ثم delete كخطوتين منفصلتين، لمنع تفعيل نفس الاشتراك مرتين لو ضغط الأدمن
+            # زر التأكيد مرتين بسرعة (Race Condition).
+            pending = await asyncio.to_thread(db.claim_pending_subscription, target_id)
             if not pending:
-                await query.answer("لا يوجد طلب معلق.", show_alert=True)
+                await query.answer("لا يوجد طلب معلق (ربما تم تأكيده بالفعل).", show_alert=True)
                 return
             plan, method, amount, wallet, _ = pending
 
@@ -665,7 +672,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.to_thread(db.add_days_to_user, target_id, 30, plan_type=plan_num)
             await asyncio.to_thread(db.log_activity, target_id, "تفعيل اشتراك", f"خطة {plan} - 30 يوم")
             await asyncio.to_thread(db.log_activity, ADMIN_ID, "تأكيد دفع", f"مستخدم {target_id} - خطة {plan}")
-            await asyncio.to_thread(db.delete_pending_subscription, target_id)
             new_data = await asyncio.to_thread(db.get_bot, target_id)
             if new_data:
                 expires_at = new_data[2]
@@ -837,6 +843,21 @@ async def safe_restore():
     except Exception as e:
         logger.error(f"Error restoring bots on startup: {e}")
 
+async def global_error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    معالج أخطاء عام: بدونه، أي استثناء غير متوقع خارج try/except المحلية
+    كان يُعالَج داخلياً بصمت بواسطة PTB دون أي تنبيه فعلي للأدمن (ضعف Observability).
+    """
+    logger.error(f"Unhandled exception in main bot: {context.error}", exc_info=context.error)
+    if ADMIN_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"⚠️ خطأ غير متوقع في البوت الرئيسي:\n\n{context.error}"
+            )
+        except Exception:
+            pass
+
 async def main():
     try:
         db.init_db()
@@ -884,6 +905,7 @@ async def main():
         return await handle_token(update, context)
 
     main_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, debug_handle_token))
+    main_app.add_error_handler(global_error_handler)
 
     await main_app.initialize()
     await main_app.updater.start_polling()

@@ -16,6 +16,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 _pool_lock = threading.Lock()
 _pool: list = []  # قائمة الاتصالات الجاهزة
 _POOL_SIZE = 5    # عدد الاتصالات الدائمة
+_MAX_TOTAL_CONNECTIONS = 20  # سقف صارم لإجمالي الاتصالات المفتوحة في آنٍ واحد (Pool + المستعارة حالياً)
+_open_connections_sem = threading.Semaphore(_MAX_TOTAL_CONNECTIONS)
 
 def _db_params():
     """استخراج بارامترات الاتصال من DATABASE_URL"""
@@ -54,38 +56,47 @@ def _is_conn_alive(conn):
         return False
 
 def get_connection():
-    """الحصول على اتصال من الـ Pool أو فتح اتصال جديد إذا كان الـ Pool فارغاً."""
+    """الحصول على اتصال من الـ Pool أو فتح اتصال جديد إذا كان الـ Pool فارغاً.
+    السقف الصارم _MAX_TOTAL_CONNECTIONS يمنع النمو غير المحدود لاتصالات DB تحت حمل مرتفع؛
+    لو امتلأ السقف، الاستدعاء ينتظر حتى يُعاد اتصال ما (بدل فتح اتصال جديد بلا حدود).
+    """
     while True:
         # 1) أخذ اتصال من الـ Pool بسرعة (lock فقط على pop)
         with _pool_lock:
             conn = _pool.pop() if _pool else None
 
-        if conn is None:
-            # Pool فارغ — نفتح اتصالاً جديداً
-            return _PooledConnection(_make_conn())
-
-        # 2) التحقق من صلاحية الاتصال خارج الـ lock (لا نُجمّد خيوطاً أخرى)
-        try:
-            conn.run("SELECT 1")
-            return _PooledConnection(conn)
-        except Exception:
-            # اتصال منتهٍ — نتخلص منه ونحاول التالي
+        if conn is not None:
+            # 2) التحقق من صلاحية الاتصال خارج الـ lock (لا نُجمّد خيوطاً أخرى)
             try:
-                conn.close()
+                conn.run("SELECT 1")
+                return _PooledConnection(conn)
             except Exception:
-                pass
-            # نكرر الدورة للحصول على اتصال آخر أو فتح جديد
+                # اتصال منتهٍ — نتخلص منه (نُحرّر مكانه في السقف) ونحاول التالي
+                try:
+                    conn.close()
+                finally:
+                    _open_connections_sem.release()
+                continue
+
+        # Pool فارغ — لا نفتح اتصالاً جديداً إلا إذا كان هناك مكان ضمن السقف الكلي
+        _open_connections_sem.acquire()
+        try:
+            return _PooledConnection(_make_conn())
+        except Exception:
+            _open_connections_sem.release()
+            raise
 
 def _return_to_pool(conn):
     """إعادة الاتصال للـ Pool بعد الانتهاء منه"""
     with _pool_lock:
         if len(_pool) < _POOL_SIZE:
             _pool.append(conn)
-        else:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            return
+    # تجاوزنا سعة الـ Pool الدائمة: نغلق الاتصال الفعلي ونُحرّر مكانه من سقف الاتصالات الكلي
+    try:
+        conn.close()
+    finally:
+        _open_connections_sem.release()
 
 class _PooledConnection:
     """
@@ -537,11 +548,11 @@ def save_hunting_channel(user_id, channel_id):
     ''', (user_id, str(channel_id)))
 
 def get_hunting_channel(user_id):
-    try:
-        row = db_execute('SELECT channel_id FROM user_hunting_channels WHERE user_id = %s', (user_id,), commit=False, fetch='one')
-        return row[0] if row else None
-    except Exception:
-        return None
+    # ملاحظة: لا نُبلع أي استثناء هنا عمداً. لو فشل الاتصال بقاعدة البيانات فعلاً،
+    # يجب أن يصل الخطأ للمتصل (check_and_hunt_numbers) ليُعامله كـ "عطل مؤقت"
+    # لا كـ "لا توجد قناة"، وإلا يُلغى Job الصيد نهائياً بالخطأ.
+    row = db_execute('SELECT channel_id FROM user_hunting_channels WHERE user_id = %s', (user_id,), commit=False, fetch='one')
+    return row[0] if row else None
 
 def set_hunting_status(user_id, is_hunting):
     status_val = 1 if is_hunting else 0
@@ -552,11 +563,10 @@ def set_hunting_status(user_id, is_hunting):
     ''', (user_id, status_val))
 
 def get_user_countries(user_id):
-    try:
-        rows = db_execute('SELECT country_name FROM user_countries WHERE user_id = %s', (user_id,), commit=False, fetch='all')
-        return [row[0] for row in rows] if rows else []
-    except Exception:
-        return []
+    # نفس الملاحظة أعلاه: لا نُخفي استثناءات DB الحقيقية بإعادة قائمة فارغة،
+    # حتى لا يُخطئ check_and_hunt_numbers فيظن أن المستخدم لم يحدد دولاً فيلغي مهمة الصيد نهائياً.
+    rows = db_execute('SELECT country_name FROM user_countries WHERE user_id = %s', (user_id,), commit=False, fetch='all')
+    return [row[0] for row in rows] if rows else []
 
 def add_user_country(user_id, country_name):
     db_execute('''
@@ -583,6 +593,19 @@ def add_pending_subscription(user_id, plan, payment_method, amount_crypto, walle
 
 def get_pending_subscription(user_id):
     return db_execute("SELECT plan, payment_method, amount_crypto, wallet_address, created_at FROM pending_subscriptions WHERE user_id = %s", (user_id,), commit=False, fetch='one')
+
+def claim_pending_subscription(user_id):
+    """
+    يقرأ الاشتراك المعلّق ويحذفه في نفس العملية الذرية (DELETE ... RETURNING)،
+    بدل قراءة ثم حذف كخطوتين منفصلتين. هذا يمنع تنفيذ نفس طلب الدفع مرتين
+    لو ضغط الأدمن زر التأكيد ضغطتين متتاليتين بسرعة (Race Condition):
+    الضغطة الثانية ستجد لا شيء لتحذفه وتُرجع None بدل تكرار تفعيل الاشتراك.
+    """
+    return db_execute(
+        "DELETE FROM pending_subscriptions WHERE user_id = %s "
+        "RETURNING plan, payment_method, amount_crypto, wallet_address, created_at",
+        (user_id,), commit=True, fetch='one'
+    )
 
 def delete_pending_subscription(user_id):
     db_execute("DELETE FROM pending_subscriptions WHERE user_id = %s", (user_id,))

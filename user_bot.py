@@ -125,18 +125,34 @@ COUNTRY_INFO.update({
     "SD": {"name": "السودان", "emoji": "🇸🇩"},
 })
 
-# عداد مؤقت لتكرار نزول الرقم
+# عداد مؤقت لتكرار نزول الرقم (بحد أقصى لكل مستخدم لمنع تسرب الذاكرة على المدى الطويل - 24/7)
 repeat_tracker = {}
-# معرف مالك البوت (يتم تخزينه عند بدء الصيد)
-bot_owner_id = None
+REPEAT_TRACKER_MAX_PER_USER = 2000  # أقصى عدد أرقام يُحتفظ بها لكل مستخدم قبل تنظيف الأقدم
 
 MAX_CONCURRENT_REQUESTS = 2
-semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+# Semaphore لكل مستخدم بدل Semaphore عالمي واحد يتشاركه كل المستخدمين،
+# حتى لا يُصبح مستخدم واحد كثيف الطلبات عنق زجاجة لبقية المستخدمين على نفس السيرفر.
+_user_semaphores = {}
+
+def _get_user_semaphore(user_id):
+    sem = _user_semaphores.get(user_id)
+    if sem is None:
+        sem = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+        _user_semaphores[user_id] = sem
+    return sem
 
 # ==================== كاش DB: تجديد كل 30 ثانية فقط ====================
 _db_cache = {}          # {user_id: {"accounts": [...], "channel": ..., "countries": [...]}}
 _db_cache_ts = {}       # {user_id: timestamp آخر تحديث}
+_db_cache_locks = {}    # {user_id: asyncio.Lock} يمنع Cache Stampede عند تزامن أول قراءة بعد انتهاء الكاش
 DB_CACHE_TTL = 30       # ثانية
+
+def _get_cache_lock(user_id):
+    lock = _db_cache_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _db_cache_locks[user_id] = lock
+    return lock
 # ==================== 1. القائمة الرئيسية ====================
 async def start_user_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🔰 مرحباً بك في بوت صيد الأرقام 🔰\n\nاختر أحد الخيارات أدناه للبدء:"
@@ -719,22 +735,37 @@ async def show_country_settings(update: Update, user_id: int, country_code: str)
 async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     user_id = job.user_id
-    
+
     now = time.perf_counter()
     cache_age = now - _db_cache_ts.get(user_id, 0)
     if user_id not in _db_cache or cache_age > DB_CACHE_TTL:
-        t_db_start = time.perf_counter()
-        active_accounts, channel, countries = await asyncio.gather(
-            asyncio.to_thread(db.get_active_site_accounts, user_id),
-            asyncio.to_thread(db.get_hunting_channel, user_id),
-            asyncio.to_thread(db.get_user_countries, user_id)
-        )
-        t_db_end = time.perf_counter()
-        _db_cache[user_id] = {"accounts": active_accounts, "channel": channel, "countries": countries}
-        _db_cache_ts[user_id] = now
-        logger.info(
-            f"[PERF_TRACE] [User: {user_id}] DB refreshed (cache miss): {t_db_end - t_db_start:.4f}s"
-        )
+        # قفل لكل مستخدم يمنع Cache Stampede: لو دخل نداءان متزامنان لنفس المستخدم
+        # لحظة انتهاء صلاحية الكاش، ينتظر الثاني بدل تكرار نفس استعلامات DB.
+        async with _get_cache_lock(user_id):
+            cache_age = now - _db_cache_ts.get(user_id, 0)
+            if user_id not in _db_cache or cache_age > DB_CACHE_TTL:
+                t_db_start = time.perf_counter()
+                try:
+                    active_accounts, channel, countries = await asyncio.gather(
+                        asyncio.to_thread(db.get_active_site_accounts, user_id),
+                        asyncio.to_thread(db.get_hunting_channel, user_id),
+                        asyncio.to_thread(db.get_user_countries, user_id)
+                    )
+                except Exception as e:
+                    # عطل DB مؤقت: لا نُلغي مهمة الصيد بسبب هذا، بل نتخطى هذه الدورة فقط
+                    # ونحاول مجدداً في الدورة القادمة (بدل تعطّل صامت دائم لكل الأرقام).
+                    logger.error(f"[User: {user_id}] فشل تحديث بيانات الصيد من DB (سيُعاد المحاولة لاحقاً): {e}")
+                    return
+                t_db_end = time.perf_counter()
+                _db_cache[user_id] = {"accounts": active_accounts, "channel": channel, "countries": countries}
+                _db_cache_ts[user_id] = now
+                logger.info(
+                    f"[PERF_TRACE] [User: {user_id}] DB refreshed (cache miss): {t_db_end - t_db_start:.4f}s"
+                )
+            else:
+                active_accounts = _db_cache[user_id]["accounts"]
+                channel        = _db_cache[user_id]["channel"]
+                countries      = _db_cache[user_id]["countries"]
     else:
         active_accounts = _db_cache[user_id]["accounts"]
         channel        = _db_cache[user_id]["channel"]
@@ -744,7 +775,13 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
         )
 
     if not active_accounts or not channel or not countries:
+        # لا توجد بيانات فعلية (وليس عطل DB) — نوقف الصيد فعلياً ونُحدّث القاعدة بنفس اللحظة
+        # حتى لا يبقى user_hunting_status يُظهر "يعمل" بينما الـ Job أُلغي فعلياً (تعارض حالة).
         job.schedule_removal()
+        try:
+            await asyncio.to_thread(db.set_hunting_status, user_id, 0)
+        except Exception as e:
+            logger.error(f"[User: {user_id}] فشل تحديث حالة الصيد إلى متوقف بعد إلغاء المهمة: {e}")
         return
 
     if user_id not in repeat_tracker:
@@ -753,9 +790,10 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     async def process_account_country(username, api_key, country_code):
         """معالجة دولة واحدة لحساب واحد، تُنفذ بشكل متوازٍ"""
         clean_country = str(country_code).strip()
+        user_semaphore = _get_user_semaphore(user_id)
         try:
             t_sem_start = time.perf_counter()
-            async with semaphore:
+            async with user_semaphore:
                 t_sem_end = time.perf_counter()
                 t_api_start = time.perf_counter()
                 result = await DurianAPI.order_number_by_name(username, api_key, clean_country, project_id="0257")
@@ -825,9 +863,14 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                         country_flag = info["emoji"]
                         break
 
-            # --- تحديث عداد التكرار ---
-            repeat_tracker[user_id][phone_number] = repeat_tracker[user_id].get(phone_number, 0) + 1
-            repeat_count = repeat_tracker[user_id][phone_number]
+            # --- تحديث عداد التكرار (مع سقف أقصى لمنع تسرب الذاكرة على المدى الطويل) ---
+            user_repeats = repeat_tracker[user_id]
+            user_repeats[phone_number] = user_repeats.get(phone_number, 0) + 1
+            repeat_count = user_repeats[phone_number]
+            if len(user_repeats) > REPEAT_TRACKER_MAX_PER_USER:
+                # نحذف أقدم نصف الإدخالات (بحسب ترتيب الإدراج) بدل تركها تنمو للأبد
+                for old_key in list(user_repeats.keys())[: REPEAT_TRACKER_MAX_PER_USER // 2]:
+                    user_repeats.pop(old_key, None)
 
             # --- صياغة الرسالة ---
             message_text = (
@@ -855,12 +898,22 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             t_send_start = time.perf_counter()
-            await context.bot.send_message(
-                chat_id=channel,
-                text=message_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup
-            )
+            # فصل إرسال الرسالة عن باقي المنطق: الرقم اشتُري بالفعل واستُهلك رصيده من DurianRCS،
+            # فلو فشل الإرسال فقط (مثلاً البوت أُزيل من صلاحيات القناة) يجب ألا يُبتلع الخطأ بصمت
+            # ضمن نفس except العام؛ يجب تسجيله بوضوح كـ"رقم مدفوع فُقد" لتمييزه عن فشل السحب/الفحص.
+            try:
+                await context.bot.send_message(
+                    chat_id=channel,
+                    text=message_text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup
+                )
+            except Exception as send_err:
+                logger.error(
+                    f"⚠️ [رقم مدفوع مفقود] فشل إرسال الرقم {phone_number} (مستخدم {user_id}, حساب {username}) "
+                    f"إلى القناة {channel} رغم استهلاك الرصيد من DurianRCS بالفعل. السبب: {send_err}"
+                )
+                return
             t_send_end = time.perf_counter()
             
             logger.info(
@@ -883,6 +936,13 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     # تنفيذ جميع المهام بشكل متوازٍ
     await asyncio.gather(*tasks)
 
+async def _user_bot_error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    معالج أخطاء عام لكل بوت فرعي للمستخدم. بدونه، أي استثناء غير متوقع
+    كان يُعالَج داخلياً بصمت بواسطة PTB دون أي تنبيه فعلي (ضعف Observability).
+    """
+    logger.error(f"Unhandled exception in user sub-bot: {context.error}", exc_info=context.error)
+
 def create_user_app(token: str):
     request_config = HTTPXRequest(
         connect_timeout=10.0,
@@ -901,4 +961,5 @@ def create_user_app(token: str):
     app.add_handler(CommandHandler("start", start_user_bot))
     app.add_handler(CallbackQueryHandler(user_bot_callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_inputs))
+    app.add_error_handler(_user_bot_error_handler)
     return app

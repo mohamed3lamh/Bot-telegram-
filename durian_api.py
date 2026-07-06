@@ -1,5 +1,7 @@
 import httpx
 import logging
+import asyncio
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -8,13 +10,44 @@ BASE_URL = "https://api.durianrcs.com/out/ext_api"
 # Global AsyncClient to reuse TCP connections (keep-alive)
 _http_client = httpx.AsyncClient(timeout=30)
 
+_RETRY_ATTEMPTS = 3
+_RETRY_BASE_DELAY = 1.5  # ثانية، مع Backoff تصاعدي بسيط
+
+
+def _mask_url(url: str) -> str:
+    """يُخفي قيمة ApiKey في نص الـ URL قبل تسجيله في اللوج، لمنع تسريب المفتاح في السجلات."""
+    return re.sub(r"(ApiKey=)[^&]+", r"\1***MASKED***", url)
+
+
+async def _get_with_retry(url: str):
+    """طلب GET مع إعادة محاولة (Retry) وBackoff تصاعدي عند فشل الاتصال أو استجابات السيرفر (5xx)."""
+    last_exc = None
+    for attempt in range(1, _RETRY_ATTEMPTS + 1):
+        try:
+            response = await _http_client.get(url)
+            if response.status_code >= 500 and attempt < _RETRY_ATTEMPTS:
+                logger.warning(f"DurianAPI: استجابة {response.status_code}, إعادة محاولة {attempt}/{_RETRY_ATTEMPTS}...")
+                await asyncio.sleep(_RETRY_BASE_DELAY * attempt)
+                continue
+            return response
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
+            last_exc = e
+            if attempt < _RETRY_ATTEMPTS:
+                logger.warning(f"DurianAPI: فشل الاتصال ({e}), إعادة محاولة {attempt}/{_RETRY_ATTEMPTS}...")
+                await asyncio.sleep(_RETRY_BASE_DELAY * attempt)
+            else:
+                raise
+    if last_exc:
+        raise last_exc
+
+
 class DurianAPI:
     @staticmethod
     async def get_balance_by_name(username: str, api_key: str) -> float:
         """جلب رصيد الحساب - getUserInfo"""
         url = f"{BASE_URL}/getUserInfo?name={username}&ApiKey={api_key}"
         try:
-            response = await _http_client.get(url)
+            response = await _get_with_retry(url)
             if response.status_code == 200:
                 data = response.json()
                 if data.get("code") == 200 and "data" in data:
@@ -31,9 +64,9 @@ class DurianAPI:
             f"{BASE_URL}/getMobile?name={username}&ApiKey={api_key}"
             f"&cuy={country_code}&pid={project_id}&num=1&noblack=0&serial=2"
         )
-        logger.info(f"[TRACE] DurianAPI.order_number_by_name: Final URL generated: {url}")
+        logger.info(f"[TRACE] DurianAPI.order_number_by_name: Final URL generated: {_mask_url(url)}")
         try:
-            response = await _http_client.get(url)
+            response = await _get_with_retry(url)
             logger.info(f"[TRACE] DurianAPI Response: Status={response.status_code}, RawBody={response.text}")
             if response.status_code == 200:
                 data = response.json()
@@ -56,7 +89,7 @@ class DurianAPI:
         # استخدام المعامل pn بدلاً من phone، والنقطة getMsg بدلاً من getSms
         url = f"{BASE_URL}/getMsg?name={username}&ApiKey={api_key}&pn={phone_number}&pid={project_id}&serial=2"
         try:
-            response = await _http_client.get(url)
+            response = await _get_with_retry(url)
             if response.status_code == 200:
                 data = response.json()
                 if data.get("code") == 200:
@@ -76,7 +109,7 @@ class DurianAPI:
         # استخدام passMobile بدلاً من cancelMobile، مع المعاملات الصحيحة
         url = f"{BASE_URL}/passMobile?name={username}&ApiKey={api_key}&pn={phone_number}&pid={project_id}&serial=2"
         try:
-            response = await _http_client.get(url)
+            response = await _get_with_retry(url)
             if response.status_code == 200:
                 data = response.json()
                 return data.get("code") == 200
@@ -92,7 +125,7 @@ class DurianAPI:
         """إضافة رقم إلى القائمة السوداء - addBlack"""
         url = f"{BASE_URL}/addBlack?name={username}&ApiKey={api_key}&pn={phone_number}&pid={project_id}"
         try:
-            response = await _http_client.get(url)
+            response = await _get_with_retry(url)
             if response.status_code == 200:
                 data = response.json()
                 return data.get("code") == 200

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections import defaultdict
 from telegram import Bot
 from telegram.error import InvalidToken, TelegramError
 from user_bot import create_user_app
@@ -11,6 +12,9 @@ class BotManager:
     def __init__(self):
         self.running_tasks = {}  # تخزين المهام النشطة {user_id: asyncio.Task}
         self.running_apps = {}   # تخزين تطبيقات البوتات {user_id: Application}
+        # قفل لكل مستخدم يمنع بدء تشغيل نسختين من نفس بوت المستخدم في نفس اللحظة
+        # (كان يحدث عند تزامن استعادة البوتات بعد إعادة تشغيل السيرفر مع ضغطة المستخدم اليدوية).
+        self._start_locks = defaultdict(asyncio.Lock)
 
     async def validate_token(self, token: str) -> bool:
         """التحقق من صحة التوكن عبر الاتصال بخوادم تيليجرام"""
@@ -23,30 +27,31 @@ class BotManager:
 
     async def start_bot(self, user_id: int, token: str) -> bool:
         """تشغيل بوت المستخدم في الخلفية دون حظر السيرفر"""
-        if user_id in self.running_tasks:
-            return False # البوت يعمل بالفعل
+        async with self._start_locks[user_id]:
+            if user_id in self.running_tasks:
+                return False # البوت يعمل بالفعل
 
-        try:
-            # إنشاء التطبيق الخاص بالبوت الفرعي وتفعيل الـ Job Queue الخاص به
-            app = create_user_app(token)
-            
-            # تهيئة وتحديث التطبيق بشكل صحيح مستقر
-            await app.initialize()
-            await app.start()
-            await app.updater.start_polling(drop_pending_updates=True)
-            
-            # حفظ التطبيق في الذاكرة
-            self.running_apps[user_id] = app
-            
-            # إطلاق حلقة الاستماع الصحيحة في الخلفية لضمان عدم تعليق البوت
-            self.running_tasks[user_id] = asyncio.create_task(self._run_app_loop(user_id))
-            
-            await asyncio.to_thread(db.set_status, user_id, 1)
-            logger.info(f"✅ تم تشغيل البوت الفرعي بنجاح للمستخدم: {user_id}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ خطأ أثناء تشغيل بوت المستخدم {user_id}: {e}")
-            return False
+            try:
+                # إنشاء التطبيق الخاص بالبوت الفرعي وتفعيل الـ Job Queue الخاص به
+                app = create_user_app(token)
+
+                # تهيئة وتحديث التطبيق بشكل صحيح مستقر
+                await app.initialize()
+                await app.start()
+                await app.updater.start_polling(drop_pending_updates=True)
+
+                # حفظ التطبيق في الذاكرة
+                self.running_apps[user_id] = app
+
+                # إطلاق حلقة الاستماع الصحيحة في الخلفية لضمان عدم تعليق البوت
+                self.running_tasks[user_id] = asyncio.create_task(self._run_app_loop(user_id))
+
+                await asyncio.to_thread(db.set_status, user_id, 1)
+                logger.info(f"✅ تم تشغيل البوت الفرعي بنجاح للمستخدم: {user_id}")
+                return True
+            except Exception as e:
+                logger.error(f"❌ خطأ أثناء تشغيل بوت المستخدم {user_id}: {e}")
+                return False
 
     async def _run_app_loop(self, user_id: int):
         """إبقاء مهمة البوت الفرعي حية ومستقرة في الخلفية"""
