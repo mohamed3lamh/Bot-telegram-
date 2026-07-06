@@ -2,7 +2,6 @@ import asyncio
 import os
 import logging
 from telethon import functions, types
-from telethon.errors import PhoneMigrateError
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
     SessionPasswordNeededError, PhoneNumberInvalidError
@@ -57,9 +56,8 @@ class TelegramChecker:
                 "status_text": "📨 الرقم مسجل على تيليجرام"
             }
 
-        # ✅ إضافة صارمة ومباشرة لحالة الرقم غير المسجل
-        except PhoneNumberInvalidError as e:
-            logger.warning(f"[INVALID] PHONE_NUMBER_INVALID detected: {phone} | {e}")
+        except PhoneNumberInvalidError:
+            # PHONE_NUMBER_INVALID → غير موجود
             return {
                 "status": "INVALID",
                 "phone": phone,
@@ -81,33 +79,13 @@ class TelegramChecker:
                 "phone": phone
             }
 
-        except PhoneMigrateError as e:
-            logger.warning(
-            f"[PHONE_MIGRATE] {phone} -> DC {e.new_dc}"
-            )
-
-            return {
-                "status": "PHONE_MIGRATE",
-                "phone": phone,
-                "dc": e.new_dc,
-                "status_text": f"📍 Phone migrated to DC {e.new_dc}"
-            }
-
         except Exception as e:
-            logger.error("=" * 70)
-            logger.error(f"UNKNOWN TELEGRAM ERROR أثناء فحص الرقم: {phone}")
-            logger.error(f"TYPE : {type(e).__name__}")
-            logger.error(f"REPR : {repr(e)}")
-            logger.error(f"STR  : {str(e)}")
-            logger.exception("FULL TRACEBACK")
-            logger.error("=" * 70)
-
             try:
                 await telegram_client_manager.disconnect_client(account["id"])
             except Exception:
                 pass
 
-            # مؤقتاً نُبقي نفس منطقك حتى نعرف الخطأ الحقيقي
+            # أي شيء غير معروف = مسجل (حسب منطقك النهائي)
             return {
                 "status": "REGISTERED",
                 "phone": phone,
