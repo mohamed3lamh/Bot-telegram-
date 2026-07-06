@@ -92,14 +92,11 @@ class TelegramChecker:
             }
 
     async def get_available_account(self):
-        """ الحصول على أول حساب متاح للفحص. """
-        # استخدام الدالة الصحيحة بالمفرد كما هو معرف في AccountManager
+        """ الحصول على حساب متاح للفحص (التوزيع والفحص من FloodWait يتمّان داخل account_manager). """
+        # account_manager.get_available_account() يُرجع فقط حسابات غير معطّلة وغير داخل FloodWait
+        # (بالاعتماد على flood_until المخزَّن في نفس صف الحساب)، لذا لا حاجة لاستعلام DB إضافي هنا
+        # يكرر نفس الفحص (كان يستدعي flood_manager.is_flooded مرة ثانية على نفس البيانات).
         account = await account_manager.get_available_account()
-            
-        if not account:
-            return None
-        if await flood_manager.is_flooded(account["id"]):
-            return None
         return account
 
     async def wait_for_account(self):
@@ -127,49 +124,79 @@ class BatchChecker:
     def __init__(self, checker):
         self.checker = checker
 
-    async def worker(self, account, queue, callback=None):
+    async def worker(self, account, queue, callback=None, active_workers=None):
         """ عامل يستخدم حساب Telegram واحد لفحص الطابور بالتوازي. """
-        while True:
-            try:
-                phone = await queue.get()
-            except asyncio.CancelledError:
-                break
-            if phone is None:
+        try:
+            while True:
+                try:
+                    phone = await queue.get()
+                except asyncio.CancelledError:
+                    break
+                if phone is None:
+                    queue.task_done()
+                    break
+
+                result = await self.checker.check_phone(account, phone)
+                if result["status"] == "FLOOD":
+                    await flood_manager.set_flood(account["id"], result["seconds"])
+                    queue.put_nowait(phone)
+                    queue.task_done()
+                    break
+                elif result["status"] == "ACCOUNT_DISABLED":
+                    queue.put_nowait(phone)
+                    queue.task_done()
+                    break
+
+                if callback:
+                    await callback(result)
                 queue.task_done()
-                break
-            
-            result = await self.checker.check_phone(account, phone)
-            if result["status"] == "FLOOD":
-                await flood_manager.set_flood(account["id"], result["seconds"])
-                queue.put_nowait(phone)
-                queue.task_done()
-                break
-            elif result["status"] == "ACCOUNT_DISABLED":
-                queue.put_nowait(phone)
-                queue.task_done()
-                break
-                
-            if callback:
-                await callback(result)
-            queue.task_done()
+        finally:
+            # هذا العامل خرج (لأي سبب: فراغ الطابور، Flood، أو تعطيل الحساب).
+            # لو كان آخر عامل حي ولا يوجد من سيستهلك بقية الطابور، نُفرّغه فوراً
+            # لمنع queue.join() من التعليق للأبد (Deadlock سابق كان يحدث هنا بالضبط).
+            if active_workers is not None:
+                async with active_workers["lock"]:
+                    active_workers["count"] -= 1
+                    is_last = active_workers["count"] <= 0
+                if is_last:
+                    drained = 0
+                    while not queue.empty():
+                        try:
+                            queue.get_nowait()
+                            queue.task_done()
+                            drained += 1
+                        except asyncio.QueueEmpty:
+                            break
+                    if drained:
+                        logger.warning(
+                            f"BatchChecker: لا يوجد أي حساب فاحص متاح، تم تفريغ {drained} رقم من الطابور بدون فحص لتفادي تعليق النظام."
+                        )
 
     async def run(self, phones, callback=None):
         """ تشغيل الفحص المتوازي الذكي. """
         queue = asyncio.Queue()
         for phone in phones:
             await queue.put(phone)
-            
+
         # جلب الحسابات باستخدام الدالة الصحيحة
         accounts = await account_manager.get_all_accounts()
         workers = []
+        active_workers = {"count": 0, "lock": asyncio.Lock()}
         for account in accounts:
             if await flood_manager.is_flooded(account["id"]):
                 continue
+            active_workers["count"] += 1
             task = asyncio.create_task(
-                self.worker(account, queue, callback)
+                self.worker(account, queue, callback, active_workers)
             )
             workers.append(task)
-            
+
+        if not workers:
+            # لا يوجد أي حساب فاحص متاح من البداية؛ لا فائدة من انتظار queue.join()
+            # لأنه لن يوجد من يستهلك الطابور أبداً (كان هذا يسبب تعليقاً دائماً).
+            logger.warning("BatchChecker.run: لا توجد حسابات فاحصة متاحة، تم إلغاء الفحص فوراً.")
+            return False
+
         await queue.join()
         for _ in workers:
             await queue.put(None)

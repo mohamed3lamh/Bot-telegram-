@@ -8,43 +8,66 @@ class AccountManager:
         self._accounts_cache = None
         self._accounts_cache_ts = 0
         self._ACCOUNTS_CACHE_TTL = 15  # ثانية
+        self._cache_lock = asyncio.Lock()  # يمنع Cache Stampede عند تزامن أول قراءة بعد انتهاء الكاش
+        self._rr_index = 0  # مؤشر Round-Robin لتوزيع الحمل بين الحسابات المتاحة
+        self._rr_lock = asyncio.Lock()
+
+    @staticmethod
+    def _naive_utcnow():
+        """وقت UTC الحالي بدون tzinfo (متوافق مع TIMESTAMP WITHOUT TIME ZONE في قاعدة البيانات)."""
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+
+    @staticmethod
+    def _is_flood_expired(flood_until, now):
+        if flood_until is None:
+            return True
+        if flood_until.tzinfo is not None:
+            flood_until = flood_until.astimezone(timezone.utc).replace(tzinfo=None)
+        return flood_until <= now
 
     async def get_all_accounts(self):
-        """ جلب جميع حسابات تيليجرام المفعلة (مع كاش 15 ثانية). """
+        """ جلب جميع حسابات تيليجرام المفعلة (مع كاش 15 ثانية، محمي من Cache Stampede). """
         now = time.monotonic()
         if self._accounts_cache is not None and (now - self._accounts_cache_ts) < self._ACCOUNTS_CACHE_TTL:
             return self._accounts_cache
 
-        def _fetch():
-            with get_connection() as conn:
-                cur = conn.cursor()
-                try:
-                    cur.execute("""
-                        SELECT id, api_id, api_hash, string_session, is_active, flood_until
-                        FROM telegram_accounts
-                        WHERE is_active = TRUE
-                        ORDER BY id ASC
-                    """)
-                    return cur.fetchall()
-                finally:
-                    cur.close()
+        # نستخدم قفلاً حتى لا تنطلق عدة استعلامات DB متزامنة لنفس التحديث (Cache Stampede)
+        async with self._cache_lock:
+            # إعادة الفحص بعد الحصول على القفل: ربما حدّثه طلب آخر أثناء الانتظار
+            now = time.monotonic()
+            if self._accounts_cache is not None and (now - self._accounts_cache_ts) < self._ACCOUNTS_CACHE_TTL:
+                return self._accounts_cache
 
-        rows = await asyncio.to_thread(_fetch)
-        
-        accounts = []
-        for row in rows:
-            accounts.append({
-                "id": row[0],
-                "api_id": row[1],
-                "api_hash": row[2],
-                "session": row[3],
-                "is_active": row[4],
-                "flood_until": row[5]
-            })
+            def _fetch():
+                with get_connection() as conn:
+                    cur = conn.cursor()
+                    try:
+                        cur.execute("""
+                            SELECT id, api_id, api_hash, string_session, is_active, flood_until
+                            FROM telegram_accounts
+                            WHERE is_active = TRUE
+                            ORDER BY id ASC
+                        """)
+                        return cur.fetchall()
+                    finally:
+                        cur.close()
 
-        self._accounts_cache = accounts
-        self._accounts_cache_ts = now
-        return accounts
+            rows = await asyncio.to_thread(_fetch)
+
+            accounts = []
+            for row in rows:
+                accounts.append({
+                    "id": row[0],
+                    "api_id": row[1],
+                    "api_hash": row[2],
+                    "session": row[3],
+                    "is_active": row[4],
+                    "flood_until": row[5]
+                })
+
+            self._accounts_cache = accounts
+            self._accounts_cache_ts = now
+            return accounts
 
     def invalidate_accounts_cache(self):
         """ إبطال الكاش فوراً (يُستخدم عند تعطيل حساب أو تغيير حالته). """
@@ -52,21 +75,24 @@ class AccountManager:
         self._accounts_cache_ts = 0
 
     async def get_available_account(self):
-        """ يرجع أول حساب صالح للاستخدام (ليس معطل وليس داخل FloodWait). """
+        """
+        يرجع حساباً صالحاً للاستخدام (ليس معطلاً وليس داخل FloodWait)،
+        بتوزيع Round-Robin بين الحسابات المتاحة بدل إرجاع نفس الحساب الأول دائماً،
+        لتفادي تركيز كل حمل الفحص على حساب واحد وتسريع دخوله في FloodWait.
+        """
         accounts = await self.get_all_accounts()
         if not accounts:
             return None
-            
-        now = datetime.now(timezone.utc)
-        for account in accounts:
-            flood_until = account["flood_until"]
-            # إذا الحساب غير داخل FloodWait
-            if flood_until is None:
-                return account
-            # انتهى وقت الـ Flood
-            if flood_until <= now:
-                return account
-        return None
+
+        now = self._naive_utcnow()
+        available = [a for a in accounts if self._is_flood_expired(a["flood_until"], now)]
+        if not available:
+            return None
+
+        async with self._rr_lock:
+            self._rr_index = (self._rr_index + 1) % len(available)
+            chosen = available[self._rr_index % len(available)]
+        return chosen
 
     # 🚀 الدالة المضافة لحل مشكلة الـ Logs وتطابق الأسماء
     async def get_available_accounts(self):
@@ -74,14 +100,9 @@ class AccountManager:
         accounts = await self.get_all_accounts()
         if not accounts:
             return []
-            
-        now = datetime.now(timezone.utc)
-        available = []
-        for account in accounts:
-            flood_until = account["flood_until"]
-            if flood_until is None or flood_until <= now:
-                available.append(account)
-        return available
+
+        now = self._naive_utcnow()
+        return [a for a in accounts if self._is_flood_expired(a["flood_until"], now)]
 
     async def disable_account(self, account_id):
         """ تعطيل الحساب. """

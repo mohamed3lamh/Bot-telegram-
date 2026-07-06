@@ -1,5 +1,7 @@
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+import asyncio
+from collections import defaultdict
 
 
 class SessionUnauthorizedError(Exception):
@@ -10,6 +12,9 @@ class SessionUnauthorizedError(Exception):
 class TelegramClientManager:
     def __init__(self):
         self.clients = {}
+        # قفل مستقل لكل account_id يمنع إنشاء عدة اتصالات Telethon متزامنة لنفس الحساب
+        # (Race Condition عند أول استخدام لحساب لم يُخزَّن بعد في self.clients)
+        self._locks = defaultdict(asyncio.Lock)
 
     async def get_client(self, account):
         """
@@ -23,34 +28,35 @@ class TelegramClientManager:
 
         account_id = account["id"]
 
-        if account_id in self.clients:
-            client = self.clients[account_id]
+        async with self._locks[account_id]:
+            if account_id in self.clients:
+                client = self.clients[account_id]
 
-            try:
-                if not client.is_connected():
-                    await client.connect()
+                try:
+                    if not client.is_connected():
+                        await client.connect()
 
-                if await client.is_user_authorized():
-                    return client
-            except Exception:
-                pass
+                    if await client.is_user_authorized():
+                        return client
+                except Exception:
+                    pass
 
-        client = TelegramClient(
-            StringSession(account["session"]),
-            int(account["api_id"]),
-            account["api_hash"]
-        )
-
-        await client.connect()
-
-        if not await client.is_user_authorized():
-            await client.disconnect()
-            raise SessionUnauthorizedError(
-                "Telegram session is not authorized."
+            client = TelegramClient(
+                StringSession(account["session"]),
+                int(account["api_id"]),
+                account["api_hash"]
             )
 
-        self.clients[account_id] = client
-        return client
+            await client.connect()
+
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                raise SessionUnauthorizedError(
+                    "Telegram session is not authorized."
+                )
+
+            self.clients[account_id] = client
+            return client
 
     async def disconnect_client(self, account_id):
         client = self.clients.pop(account_id, None)
