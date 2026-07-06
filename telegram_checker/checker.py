@@ -71,13 +71,6 @@ class TelegramChecker:
                 "status_text": "📵 محظور"
             }
 
-        except SessionPasswordNeededError:
-            return {
-                "status": "HAS_SESSION",
-                "phone": phone,
-                "status_text": "⚠️ الرقم لديه جلسة"
-            }
-
         except FloodWaitError as e:
             await flood_manager.set_flood(account["id"], e.seconds)
             return {
