@@ -56,8 +56,9 @@ class TelegramChecker:
                 "status_text": "📨 الرقم مسجل على تيليجرام"
             }
 
-        except PhoneNumberInvalidError:
-            # PHONE_NUMBER_INVALID → غير موجود
+        # ✅ إضافة صارمة ومباشرة لحالة الرقم غير المسجل
+        except PhoneNumberInvalidError as e:
+            logger.warning(f"[INVALID] PHONE_NUMBER_INVALID detected: {phone} | {e}")
             return {
                 "status": "INVALID",
                 "phone": phone,
@@ -84,6 +85,8 @@ class TelegramChecker:
                 await telegram_client_manager.disconnect_client(account["id"])
             except Exception:
                 pass
+
+            logger.error(f"[UNKNOWN ERROR] {type(e)} | {e}")
 
             # أي شيء غير معروف = مسجل (حسب منطقك النهائي)
             return {
