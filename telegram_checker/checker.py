@@ -4,8 +4,7 @@ import logging
 from telethon import functions, types
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
-    SessionPasswordNeededError, PhoneNumberInvalidError,
-    PhoneNumberUnoccupiedError
+    SessionPasswordNeededError, PhoneNumberInvalidError
 )
 from .telegram_client import telegram_client_manager, SessionUnauthorizedError
 from .account_manager import account_manager
@@ -64,13 +63,6 @@ class TelegramChecker:
                 "status": "INVALID",
                 "phone": phone,
                 "status_text": "❌ غير موجود / رقم غير صالح"
-            }
-
-        except PhoneNumberUnoccupiedError:
-            return {
-                "status": "UNREGISTERED",
-                "phone": phone,
-                "status_text": "📵 غير مسجل على تيليجرام"
             }
 
         except PhoneNumberBannedError:
