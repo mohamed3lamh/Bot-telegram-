@@ -2,6 +2,7 @@ import asyncio
 import os
 import logging
 from telethon import functions, types
+from telethon.errors import PhoneMigrateError
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
     SessionPasswordNeededError, PhoneNumberInvalidError
@@ -78,6 +79,18 @@ class TelegramChecker:
                 "status": "FLOOD",
                 "seconds": e.seconds,
                 "phone": phone
+            }
+
+        except PhoneMigrateError as e:
+            logger.warning(
+            f"[PHONE_MIGRATE] {phone} -> DC {e.new_dc}"
+            )
+
+            return {
+                "status": "PHONE_MIGRATE",
+                "phone": phone,
+                "dc": e.new_dc,
+                "status_text": f"📍 Phone migrated to DC {e.new_dc}"
             }
 
         except Exception as e:
