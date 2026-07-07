@@ -846,6 +846,7 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
 
             # --- الفحص السريع ---
             status_text = "🔴 حالة غير معروفة"  # افتراضي إذا لم يتم الفحص
+            # Max retries to handle checker account deactivation during operation
             max_retries = 3
             attempt = 0
             

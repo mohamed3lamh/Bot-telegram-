@@ -64,6 +64,7 @@ class TelegramClientManager:
             is_auth = False
             if await client.is_user_authorized():
                 try:
+                    # Verify validity on Telegram servers via get_me() call
                     me = await client.get_me()
                     if me is not None:
                         is_auth = True

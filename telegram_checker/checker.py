@@ -162,6 +162,7 @@ class AccurateStrategy(BaseCheckStrategy):
     - Invalid -> INVALID (⚠️ غير صالح)
     """
     async def check(self, client, phone, account):
+        # Initialize a temporary anonymous guest client
         api_id = account["api_id"]
         api_hash = account["api_hash"]
         
