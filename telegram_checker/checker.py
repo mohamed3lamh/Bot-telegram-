@@ -5,8 +5,8 @@ import time
 from telethon import functions, types
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
-    SessionPasswordNeededError, PhoneNumberInvalidError,
-    PhoneNumberUnoccupiedError  # ⚠️ تم استيراد الخطأ الصحيح للأرقام غير المسجلة
+    SessionPasswordNeededError, PhoneNumberInvalidError, PhoneNumberUnoccupiedError,
+    PhoneMigrateError  # ⚠️ أضف هذا الاستيراد هنا
 )
 from .telegram_client import telegram_client_manager, SessionUnauthorizedError
 from .account_manager import account_manager
@@ -87,6 +87,28 @@ class TelegramChecker:
                 "seconds": e.seconds,
                 "phone": phone
             }
+
+                except PhoneMigrateError as e:
+            logger.warning(f"🔄 الرقم {phone} ينتمي إلى مركز البيانات DC {e.dc}. جاري إعادة التوجيه...")
+            try:
+                client = await telegram_client_manager.get_client(account)
+                
+                # التحويل إلى مركز البيانات الصحيح
+                await client._switch_dc(e.dc)
+                
+                # تأخير بسيط جداً (نصف ثانية) لاستقرار الاتصال بالسيرفر الجديد
+                await asyncio.sleep(0.5)
+                
+                # إعادة محاولة طلب الكود مجدداً (ستنجح الآن ويُرسل الكود للموقع إذا كان الحساب جديداً)
+                return await self.check_phone(account, phone)
+                
+            except Exception as migrate_error:
+                logger.error(f"فشل التحويل التلقائي لـ DC {e.dc}: {migrate_error}")
+                return {
+                    "status": "MIGRATE_FAILED",
+                    "phone": phone,
+                    "status_text": f"❌ فشل الاتصال بـ DC {e.dc}"
+                }
 
         except Exception as e:
             try:
