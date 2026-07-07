@@ -269,12 +269,12 @@ class AccurateStrategy(BaseCheckStrategy):
                 f"Class: PhoneMigrateError\n"
                 f"Message: {str(e)}\n"
                 f"Traceback:\n{traceback.format_exc()}\n"
-                f"DC migration requested to DC {e.dc} for {phone}. Re-routing..."
+                f"DC migration requested to DC {e.new_dc} for {phone}. Re-routing..."
             )
             try:
                 await telegram_client_manager.disconnect_client(account["id"])
                 client2 = await telegram_client_manager.get_client(account)
-                await client2._switch_dc(e.dc)
+                await client2._switch_dc(e.new_dc)
                 await asyncio.sleep(0.5)
                 # Retry inside correct DC
                 return await self.check(client2, phone, account)
@@ -288,7 +288,7 @@ class AccurateStrategy(BaseCheckStrategy):
                 return {
                     "status": "ERROR",
                     "phone": phone,
-                    "status_text": f"❌ فشل الاتصال بـ DC {e.dc}"
+                    "status_text": f"❌ فشل الاتصال بـ DC {e.new_dc}"
                 }
 
         except FloodWaitError as e:
