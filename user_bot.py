@@ -784,6 +784,15 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"[User: {user_id}] فشل تحديث حالة الصيد إلى متوقف بعد إلغاء المهمة: {e}")
         return
 
+    # التأكد من وجود حساب فاحص نشط ومتاح قبل سحب أي رقم من الموقع لتفادي هدر الأموال
+    # وتجنب تراكم أرقام بحالة "غير معروفة"
+    checker_probe = await telegram_checker.get_available_account()
+    if not checker_probe:
+        logger.warning(
+            f"[User: {user_id}] تم تخطي دورة الصيد هذه لأنه لا يوجد أي حساب فاحص نشط أو متاح حالياً (جميع الحسابات في FloodWait أو معطلة)."
+        )
+        return
+
     if user_id not in repeat_tracker:
         repeat_tracker[user_id] = {}
 

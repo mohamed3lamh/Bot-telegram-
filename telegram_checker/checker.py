@@ -209,7 +209,8 @@ class HybridStrategy(BaseCheckStrategy):
     """
     Strategy 2: Smart Verification (Hybrid)
     Executes SilentStrategy first.
-    If the result is UNKNOWN, upgrades to AccurateStrategy (send_code_request) for unresolved cases only.
+    If the result is UNKNOWN, or if the silent check fails/errors out (due to contact import limits),
+    upgrades to AccurateStrategy (send_code_request) to get a definitive answer.
     """
     def __init__(self):
         self.silent = SilentStrategy()
@@ -219,13 +220,14 @@ class HybridStrategy(BaseCheckStrategy):
         # Phase 1: Silent check (Import contacts)
         res = await self.silent.check(client, phone, account)
         
-        # If successfully resolved (Registered / Error / Banned / Flood), return immediately
-        if res["status"] in ["HAS_SESSION", "FLOOD_WAIT", "ERROR"]:
+        # If successfully resolved to HAS_SESSION (Registered), return immediately
+        if res["status"] == "HAS_SESSION":
             return res
 
-        # Phase 2: If status is UNKNOWN, run the Accurate verification
-        if res["status"] == "UNKNOWN":
-            logger.info(f"[HybridStrategy] Silent check returned UNKNOWN for {phone}. Upgrading to Accurate check...")
+        # If it returned UNKNOWN, or if it failed (ERROR / FLOOD_WAIT) due to contact import limits,
+        # fallback to the Accurate verification (send_code_request) to get a precise answer.
+        if res["status"] in ["UNKNOWN", "ERROR", "FLOOD_WAIT"]:
+            logger.info(f"[HybridStrategy] Silent check returned {res['status']} for {phone}. Upgrading to Accurate check...")
             return await self.accurate.check(client, phone, account)
 
         return res
