@@ -41,9 +41,9 @@ class TelegramChecker:
             }
 
         try:
-            # 1. التحقق أولاً من تسجيل الرقم عبر استيراد جهة الاتصال
-            # لتفادي إرسال كود للأرقام المسجلة مسبقاً وتوفير التكلفة والـ Spam limit
+            # التحقق من تسجيل الرقم عبر استيراد جهة الاتصال فقط دون إرسال أي كود
             is_registered = False
+            user_id_to_delete = None
             try:
                 contact = types.InputPhoneContact(client_id=0, phone=phone, first_name="TempCheck", last_name="")
                 import_res = await asyncio.wait_for(
@@ -52,11 +52,36 @@ class TelegramChecker:
                 )
                 if import_res.users:
                     is_registered = True
-                    # حذف جهة الاتصال فوراً لتفادي تراكم جهات الاتصال في الحساب الفاحص
-                    user_id = import_res.users[0].id
-                    await client(functions.contacts.DeleteContactsRequest(id=[user_id]))
+                    user_id_to_delete = import_res.users[0].id
+                
+                # حذف جهة الاتصال لتنظيف قائمة الفاحص في الحالتين
+                if import_res.imported:
+                    imported_user_id = import_res.imported[0].user_id
+                    await client(functions.contacts.DeleteContactsRequest(id=[imported_user_id]))
+                elif user_id_to_delete:
+                    await client(functions.contacts.DeleteContactsRequest(id=[user_id_to_delete]))
             except Exception as e:
                 logger.warning(f"Contact import check failed for {phone}: {e}")
+                # في حالة حدوث خطأ بسبب حظر الحساب الفاحص نفسه
+                error_message = str(e)
+                if "BANNED" in error_message.upper() or "AUTH_KEY_UNREGISTERED" in error_message.upper():
+                    await account_manager.disable_account(account["id"])
+                    return {
+                        "status": "CHECKER_BANNED",
+                        "phone": phone,
+                        "status_text": "❌ حساب الفاحص نفسه تم حظره الآن وتلف"
+                    }
+                elif "FLOOD" in error_message.upper() or "FLOOD_WAIT" in error_message.upper():
+                    # محاولة استخراج ثواني الحظر إن وجدت
+                    seconds = 60
+                    await flood_manager.set_flood(account["id"], seconds)
+                    return {
+                        "status": "FLOOD",
+                        "seconds": seconds,
+                        "phone": phone,
+                        "status_text": f"🚫 حظر مؤقت {seconds} ثانية"
+                    }
+                raise e
 
             if is_registered:
                 return {
@@ -64,101 +89,25 @@ class TelegramChecker:
                     "phone": phone,
                     "status_text": "⚠️ مسجل"
                 }
-
-            # 2. إذا لم يكن مسجلاً، نقوم بإرسال الكود لتنشيط الـ SMS الفعلي وتأكيد الحالة
-            t_send_code_start = time.perf_counter()
-            await client.send_code_request(phone)
-            t_send_code_end = time.perf_counter()
-
-            logger.info(
-                f"[PERF_TRACE] [Checker ID: {account.get('id')}] send_code_request duration: "
-                f"{t_send_code_end - t_send_code_start:.4f}s"
-            )
-
-            # لا يوجد خطأ، وكان غير مسجل في فحص جهات الاتصال،
-            # فهذا يعني أن الرقم جديد تماماً وغير مسجل وتم إرسال كود SMS حقيقي له.
-            return {
-                "status": "NOT_REGISTERED",
-                "phone": phone,
-                "status_text": "🆕 غير مسجل"
-            }
-
-        except SessionPasswordNeededError:
-            # الرقم لديه جلسة محمية بالتحقق بخطوتين (مسجل)
-            return {
-                "status": "REGISTERED",
-                "phone": phone,
-                "status_text": "⚠️ مسجل"
-            }
-
-        except PhoneNumberUnoccupiedError:
-            # الرقم غير مسجل في تليجرام
-            return {
-                "status": "NOT_REGISTERED",
-                "phone": phone,
-                "status_text": "🆕 غير مسجل"
-            }
-
-        except PhoneMigrateError as e:
-            logger.warning(f"🔄 الرقم {phone} ينتمي إلى مركز البيانات DC {e.dc}. جاري التوجيه...")
-            try:
-                client = await telegram_client_manager.get_client(account)
-                await client._switch_dc(e.dc)
-                await asyncio.sleep(0.5)
-                return await self.check_phone(account, phone)
-            except Exception as migrate_error:
-                logger.error(f"فشل التحويل التلقائي لـ DC {e.dc}: {migrate_error}")
+            else:
+                # الرقم غير مسجل - نرجع الحالة مباشرة دون إرسال أي كود
                 return {
-                    "status": "MIGRATE_FAILED",
+                    "status": "NOT_REGISTERED",
                     "phone": phone,
-                    "status_text": f"❌ فشل الاتصال بـ DC {e.dc}"
+                    "status_text": "🆕 غير مسجل"
                 }
 
-        except PhoneNumberInvalidError:
-            return {
-                "status": "INVALID",
-                "phone": phone,
-                "status_text": "⚠️ غير صالح"
-            }
-
-        except PhoneNumberBannedError:
-            return {
-                "status": "BANNED",
-                "phone": phone,
-                "status_text": "📵 محظور"
-            }
-
-        except FloodWaitError as e:
-            await flood_manager.set_flood(account["id"], e.seconds)
-            return {
-                "status": "FLOOD",
-                "seconds": e.seconds,
-                "phone": phone,
-                "status_text": f"🚫 حظر مؤقت {e.seconds} ثانية"
-            }
-            
         except Exception as e:
             try:
                 await telegram_client_manager.disconnect_client(account["id"])
             except Exception:
                 pass
 
-            # 🛠️ تعديل هندسي: استخراج نص الخطأ الصريح القادم من تيليجرام لمعرفة السبب بدقة
             error_message = str(e)
-            
-            # إذا كان الخطأ بسبب حظر حساب الفاحص نفسه
-            if "BANNED" in error_message.upper() or "AUTH_KEY_UNREGISTERED" in error_message.upper():
-                await account_manager.disable_account(account["id"])
-                return {
-                    "status": "CHECKER_BANNED",
-                    "phone": phone,
-                    "status_text": "❌ حساب الفاحص نفسه تم حظره الآن وتلف"
-                }
-
             return {
                 "status": "UNKNOWN_ERROR",
                 "phone": phone,
-                "status_text": f"⚙️ خطأ من السيرفر: {error_message}"  # سيطبع لك نص الخطأ الحقيقي في التلغرام
+                "status_text": f"⚙️ خطأ من السيرفر: {error_message}"
             }
 
     async def get_available_account(self):
