@@ -102,8 +102,8 @@ class TelegramChecker:
                 "seconds": e.seconds,
                 "phone": phone
             }
-
-         except Exception as e:
+            
+        except Exception as e:
             try:
                 await telegram_client_manager.disconnect_client(account["id"])
             except Exception:
