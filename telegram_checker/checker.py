@@ -41,6 +41,31 @@ class TelegramChecker:
             }
 
         try:
+            # 1. التحقق أولاً من تسجيل الرقم عبر استيراد جهة الاتصال
+            # لتفادي إرسال كود للأرقام المسجلة مسبقاً وتوفير التكلفة والـ Spam limit
+            is_registered = False
+            try:
+                contact = types.InputPhoneContact(client_id=0, phone=phone, first_name="TempCheck", last_name="")
+                import_res = await asyncio.wait_for(
+                    client(functions.contacts.ImportContactsRequest(contacts=[contact])),
+                    timeout=10.0
+                )
+                if import_res.users:
+                    is_registered = True
+                    # حذف جهة الاتصال فوراً لتفادي تراكم جهات الاتصال في الحساب الفاحص
+                    user_id = import_res.users[0].id
+                    await client(functions.contacts.DeleteContactsRequest(id=[user_id]))
+            except Exception as e:
+                logger.warning(f"Contact import check failed for {phone}: {e}")
+
+            if is_registered:
+                return {
+                    "status": "REGISTERED",
+                    "phone": phone,
+                    "status_text": "⚠️ مسجل"
+                }
+
+            # 2. إذا لم يكن مسجلاً، نقوم بإرسال الكود لتنشيط الـ SMS الفعلي وتأكيد الحالة
             t_send_code_start = time.perf_counter()
             await client.send_code_request(phone)
             t_send_code_end = time.perf_counter()
@@ -50,23 +75,31 @@ class TelegramChecker:
                 f"{t_send_code_end - t_send_code_start:.4f}s"
             )
 
-            # لا يوجد خطأ = الرقم مسجل بالفعل مسبقاً وله حساب قائم
-            return {
-                "status": "REGISTERED",
-                "phone": phone,
-                "status_text": "⚠️ الرقم مسجل مسبقاً على تيليجرام"
-            }
-
-        except PhoneNumberUnoccupiedError:
-            # 🎯 الرقم غير مسجل (جديد) وجاهز للصيد، وتم إرسال كود الـ SMS للموقع
+            # لا يوجد خطأ، وكان غير مسجل في فحص جهات الاتصال،
+            # فهذا يعني أن الرقم جديد تماماً وغير مسجل وتم إرسال كود SMS حقيقي له.
             return {
                 "status": "NOT_REGISTERED",
                 "phone": phone,
-                "status_text": "✅ الرقم جديد وغير مسجل! يمكنك الذهاب للتطبيق وتسجيله يدوياً."
+                "status_text": "🆕 غير مسجل"
+            }
+
+        except SessionPasswordNeededError:
+            # الرقم لديه جلسة محمية بالتحقق بخطوتين (مسجل)
+            return {
+                "status": "REGISTERED",
+                "phone": phone,
+                "status_text": "⚠️ مسجل"
+            }
+
+        except PhoneNumberUnoccupiedError:
+            # الرقم غير مسجل في تليجرام
+            return {
+                "status": "NOT_REGISTERED",
+                "phone": phone,
+                "status_text": "🆕 غير مسجل"
             }
 
         except PhoneMigrateError as e:
-            # 🔄 تم ضبط مسافات هذا البلوك بدقة لحل خطأ الـ IndentationError
             logger.warning(f"🔄 الرقم {phone} ينتمي إلى مركز البيانات DC {e.dc}. جاري التوجيه...")
             try:
                 client = await telegram_client_manager.get_client(account)
@@ -85,14 +118,14 @@ class TelegramChecker:
             return {
                 "status": "INVALID",
                 "phone": phone,
-                "status_text": "❌ الرقم غير صحيح أو صيغته خاطئة"
+                "status_text": "⚠️ غير صالح"
             }
 
         except PhoneNumberBannedError:
             return {
                 "status": "BANNED",
                 "phone": phone,
-                "status_text": "📵 محظور من الشركة"
+                "status_text": "📵 محظور"
             }
 
         except FloodWaitError as e:
@@ -100,7 +133,8 @@ class TelegramChecker:
             return {
                 "status": "FLOOD",
                 "seconds": e.seconds,
-                "phone": phone
+                "phone": phone,
+                "status_text": f"🚫 حظر مؤقت {e.seconds} ثانية"
             }
             
         except Exception as e:
