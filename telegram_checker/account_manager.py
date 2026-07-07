@@ -45,7 +45,7 @@ class AccountManager:
                     cur = conn.cursor()
                     try:
                         cur.execute("""
-                            SELECT id, api_id, api_hash, string_session, is_active, flood_until
+                            SELECT id, api_id, api_hash, string_session, is_active, flood_until, phone
                             FROM telegram_accounts
                             WHERE is_active = TRUE
                             ORDER BY id ASC
@@ -64,7 +64,8 @@ class AccountManager:
                     "api_hash": row[2],
                     "session": row[3],
                     "is_active": row[4],
-                    "flood_until": row[5]
+                    "flood_until": row[5],
+                    "phone": row[6]
                 })
 
             self._accounts_cache = accounts

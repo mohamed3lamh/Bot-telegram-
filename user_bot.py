@@ -822,9 +822,29 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
             if not phone_number:
                 return
 
+            # --- TRACE LOGS START ---
+            import datetime
+            req_id = result.get("id") or result.get("order") or "N/A"
+            logger.info(
+                f"\n==============================\n"
+                f"NEW PHONE RECEIVED\n"
+                f"Phone: {phone_number}\n"
+                f"Time: {datetime.datetime.now().isoformat()}\n"
+                f"Request ID: {req_id}\n"
+                f"==============================\n"
+                f"[STEP 1]\n"
+                f"Received from Durian API\n"
+                f"\n"
+                f"[STEP 2]\n"
+                f"Number entered user_bot.py\n"
+                f"\n"
+                f"[STEP 3]\n"
+                f"Sending number to TelegramChecker"
+            )
+
             t_number_start = time.perf_counter()
 
-            # --- الفحص السريع (اختياري، يمكن تعطيله مؤقتًا للسرعة) ---
+            # --- الفحص السريع ---
             status_text = "🔴 حالة غير معروفة"  # افتراضي إذا لم يتم الفحص
             try:
                 t_get_checker_start = time.perf_counter()
@@ -853,9 +873,18 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                     else:
                         status_text = "⚪️ غير معروف / معلق"
                 else:
-                    logger.info(f"[PERF_TRACE] [Number: {phone_number}] No checker account available for checking.")
+                    logger.warning(
+                        f"[STEP 4] Selected checker account failed.\n"
+                        f"No checker account available for checking."
+                    )
             except Exception as e:
-                logger.warning(f"فحص الرقم {phone_number} فشل: {e}")
+                import traceback
+                logger.error(
+                    f"فحص الرقم {phone_number} فشل مع استثناء:\n"
+                    f"Class: {e.__class__.__name__}\n"
+                    f"Message: {str(e)}\n"
+                    f"Traceback:\n{traceback.format_exc()}"
+                )
                 
             # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة) ---
             country_name = clean_country.upper()
