@@ -1,10 +1,12 @@
 import asyncio
 import os
 import logging
+import time
 from telethon import functions, types
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
-    SessionPasswordNeededError, PhoneNumberInvalidError
+    SessionPasswordNeededError, PhoneNumberInvalidError,
+    PhoneNumberUnoccupiedError  # ⚠️ تم استيراد الخطأ الصحيح للأرقام غير المسجلة
 )
 from .telegram_client import telegram_client_manager, SessionUnauthorizedError
 from .account_manager import account_manager
@@ -18,7 +20,6 @@ class TelegramChecker:
 
     async def check_phone(self, account, phone):
         """ فحص حالة الرقم والجلسة بدقة متناهية بناءً على رد سيرفر التلغرام الفوري. """
-        import time
         t_start = time.perf_counter()
 
         try:
@@ -49,26 +50,34 @@ class TelegramChecker:
                 f"{t_send_code_end - t_send_code_start:.4f}s"
             )
 
-            # لا يوجد خطأ = نعتبره "مسجل"
+            # لا يوجد خطأ = الرقم مسجل بالفعل وله حساب قائم
             return {
                 "status": "REGISTERED",
                 "phone": phone,
-                "status_text": "⚠️ الرقم مسجل على تيليجرام"
+                "status_text": "⚠️ الرقم مسجل مسبقاً على تيليجرام"
+            }
+
+        except PhoneNumberUnoccupiedError:
+            # ⚠️ التعديل الجوهري: الرقم غير مسجل (جديد) وتم إرسال كود الـ SMS إليه الآن!
+            return {
+                "status": "NOT_REGISTERED",
+                "phone": phone,
+                "status_text": "✅ الرقم جديد وغير مسجل! تم إرسال كود التفعيل إلى موقع الأرقام."
             }
 
         except PhoneNumberInvalidError:
-            # PHONE_NUMBER_INVALID → غير موجود
+            # صيغة الرقم خاطئة (نقص أرقام أو رمز دولة خاطئ)
             return {
                 "status": "INVALID",
                 "phone": phone,
-                "status_text": "✅ الرقم غير مسجل على تيليجرام"
+                "status_text": "❌ الرقم غير صحيح أو صيغته خاطئة"
             }
 
         except PhoneNumberBannedError:
             return {
                 "status": "BANNED",
                 "phone": phone,
-                "status_text": "📵 محظور"
+                "status_text": "📵 محظور من الشركة"
             }
 
         except FloodWaitError as e:
@@ -85,11 +94,10 @@ class TelegramChecker:
             except Exception:
                 pass
 
-            # أي شيء غير معروف = مسجل (حسب منطقك النهائي)
             return {
-                "status": "REGISTERED",
+                "status": "UNKNOWN_ERROR",
                 "phone": phone,
-                "status_text": "📨 الرقم مسجل على تيليجرام"
+                "status_text": f"⚙️ خطأ غير معروف: {str(e)}"
             }
 
     async def get_available_account(self):
