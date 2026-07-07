@@ -6,96 +6,180 @@ from telethon import functions, types
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
     SessionPasswordNeededError, PhoneNumberInvalidError,
-    PhoneNumberUnoccupiedError, PhoneMigrateError  # ⚠️ تم ضبط الاستيرادات بشكل سليم
+    PhoneNumberUnoccupiedError, PhoneMigrateError
 )
+from telethon.tl.types.auth import SentCodeTypeApp, SentCodeTypeSms
 from .telegram_client import telegram_client_manager, SessionUnauthorizedError
 from .account_manager import account_manager
 from .flood_manager import flood_manager
 
 logger = logging.getLogger(__name__)
 
-class TelegramChecker:
-    def __init__(self):
-        pass
+# =====================================================================
+# Strategy Pattern: base abstract class and individual strategies
+# =====================================================================
 
-    async def check_phone(self, account, phone):
-        """ فحص حالة الرقم والجلسة بدقة متناهية بناءً على رد سيرفر التلغرام الفوري. """
-        t_start = time.perf_counter()
+class BaseCheckStrategy:
+    async def check(self, client, phone, account):
+        raise NotImplementedError("Strategies must implement the check method.")
 
+
+class SilentStrategy(BaseCheckStrategy):
+    """
+    Strategy 1: Silent Check
+    Uses only contacts.importContacts.
+    - If user is found -> HAS_SESSION (⚠️ مسجل)
+    - If user is not found -> UNKNOWN (🔴 غير معروف / معلق)
+    Does NOT call send_code_request, avoiding SMS dispatch.
+    """
+    async def check(self, client, phone, account):
+        is_registered = False
+        user_id_to_delete = None
         try:
-            t_get_client_start = time.perf_counter()
-            client = await telegram_client_manager.get_client(account)
-            t_get_client_end = time.perf_counter()
-
-            logger.info(
-                f"[PERF_TRACE] [Checker ID: {account.get('id')}] get_client duration: "
-                f"{t_get_client_end - t_get_client_start:.4f}s"
+            contact = types.InputPhoneContact(client_id=0, phone=phone, first_name="TempCheck", last_name="")
+            import_res = await asyncio.wait_for(
+                client(functions.contacts.ImportContactsRequest(contacts=[contact])),
+                timeout=10.0
             )
-
-        except SessionUnauthorizedError:
-            await account_manager.disable_account(account["id"])
+            if import_res.users:
+                is_registered = True
+                user_id_to_delete = import_res.users[0].id
+            
+            # Clean up the contact list to prevent bloating the checker account
+            if import_res.imported:
+                imported_user_id = import_res.imported[0].user_id
+                await client(functions.contacts.DeleteContactsRequest(id=[imported_user_id]))
+            elif user_id_to_delete:
+                await client(functions.contacts.DeleteContactsRequest(id=[user_id_to_delete]))
+        except Exception as e:
+            logger.warning(f"[SilentStrategy] Contact import failed for {phone}: {e}")
+            error_message = str(e)
+            
+            # If the checker account itself is banned/deactivated
+            if "BANNED" in error_message.upper() or "AUTH_KEY_UNREGISTERED" in error_message.upper():
+                await account_manager.disable_account(account["id"])
+                return {
+                    "status": "ERROR",
+                    "phone": phone,
+                    "status_text": "❌ حساب الفاحص تالف وتلف"
+                }
+            elif "FLOOD" in error_message.upper() or "FLOOD_WAIT" in error_message.upper():
+                await flood_manager.set_flood(account["id"], 60)
+                return {
+                    "status": "FLOOD_WAIT",
+                    "phone": phone,
+                    "status_text": "🚫 حظر مؤقت لجهة الاتصال (60 ثانية)"
+                }
             return {
-                "status": "ACCOUNT_DISABLED",
+                "status": "ERROR",
                 "phone": phone,
-                "status_text": "❌ حساب الفاحص تالف وتم تعطيله"
+                "status_text": f"⚙️ خطأ أثناء الاستيراد الصامت: {error_message}"
             }
 
-        try:
-            # التحقق من تسجيل الرقم عبر استيراد جهة الاتصال فقط دون إرسال أي كود
-            is_registered = False
-            user_id_to_delete = None
-            try:
-                contact = types.InputPhoneContact(client_id=0, phone=phone, first_name="TempCheck", last_name="")
-                import_res = await asyncio.wait_for(
-                    client(functions.contacts.ImportContactsRequest(contacts=[contact])),
-                    timeout=10.0
-                )
-                if import_res.users:
-                    is_registered = True
-                    user_id_to_delete = import_res.users[0].id
-                
-                # حذف جهة الاتصال لتنظيف قائمة الفاحص في الحالتين
-                if import_res.imported:
-                    imported_user_id = import_res.imported[0].user_id
-                    await client(functions.contacts.DeleteContactsRequest(id=[imported_user_id]))
-                elif user_id_to_delete:
-                    await client(functions.contacts.DeleteContactsRequest(id=[user_id_to_delete]))
-            except Exception as e:
-                logger.warning(f"Contact import check failed for {phone}: {e}")
-                # في حالة حدوث خطأ بسبب حظر الحساب الفاحص نفسه
-                error_message = str(e)
-                if "BANNED" in error_message.upper() or "AUTH_KEY_UNREGISTERED" in error_message.upper():
-                    await account_manager.disable_account(account["id"])
-                    return {
-                        "status": "CHECKER_BANNED",
-                        "phone": phone,
-                        "status_text": "❌ حساب الفاحص نفسه تم حظره الآن وتلف"
-                    }
-                elif "FLOOD" in error_message.upper() or "FLOOD_WAIT" in error_message.upper():
-                    # محاولة استخراج ثواني الحظر إن وجدت
-                    seconds = 60
-                    await flood_manager.set_flood(account["id"], seconds)
-                    return {
-                        "status": "FLOOD",
-                        "seconds": seconds,
-                        "phone": phone,
-                        "status_text": f"🚫 حظر مؤقت {seconds} ثانية"
-                    }
-                raise e
+        if is_registered:
+            return {
+                "status": "HAS_SESSION",
+                "phone": phone,
+                "status_text": "⚠️ مسجل"
+            }
+        else:
+            return {
+                "status": "UNKNOWN",
+                "phone": phone,
+                "status_text": "🔴 غير معروف / معلق"
+            }
 
-            if is_registered:
+
+class AccurateStrategy(BaseCheckStrategy):
+    """
+    Strategy 3: Accurate Mode
+    Directly calls send_code_request and determines status via responses or exceptions.
+    - Succeeded with App Type -> HAS_SESSION (⚠️ مسجل)
+    - Succeeded with SMS Type -> NO_SESSION (🆕 غير مسجل)
+    - Password Needed -> HAS_SESSION (⚠️ مسجل)
+    - Unoccupied -> NO_SESSION (🆕 غير مسجل)
+    - Banned -> BANNED (📵 محظور)
+    - Invalid -> INVALID (⚠️ غير صالح)
+    """
+    async def check(self, client, phone, account):
+        try:
+            t_send_code_start = time.perf_counter()
+            sent_code = await client.send_code_request(phone)
+            t_send_code_end = time.perf_counter()
+
+            logger.info(
+                f"[AccurateStrategy] [Checker ID: {account.get('id')}] send_code_request duration: "
+                f"{t_send_code_end - t_send_code_start:.4f}s"
+            )
+
+            # Check sent_code type to differentiate registered vs unregistered
+            if isinstance(sent_code.type, SentCodeTypeApp):
                 return {
-                    "status": "REGISTERED",
+                    "status": "HAS_SESSION",
                     "phone": phone,
                     "status_text": "⚠️ مسجل"
                 }
             else:
-                # الرقم غير مسجل - نرجع الحالة مباشرة دون إرسال أي كود
+                # SentCodeTypeSms means code sent via SMS -> Unregistered
                 return {
-                    "status": "NOT_REGISTERED",
+                    "status": "NO_SESSION",
                     "phone": phone,
                     "status_text": "🆕 غير مسجل"
                 }
+
+        except SessionPasswordNeededError:
+            return {
+                "status": "HAS_SESSION",
+                "phone": phone,
+                "status_text": "⚠️ مسجل"
+            }
+
+        except PhoneNumberUnoccupiedError:
+            return {
+                "status": "NO_SESSION",
+                "phone": phone,
+                "status_text": "🆕 غير مسجل"
+            }
+
+        except PhoneNumberBannedError:
+            return {
+                "status": "BANNED",
+                "phone": phone,
+                "status_text": "📵 محظور"
+            }
+
+        except PhoneNumberInvalidError:
+            return {
+                "status": "INVALID",
+                "phone": phone,
+                "status_text": "⚠️ غير صالح"
+            }
+
+        except PhoneMigrateError as e:
+            logger.warning(f"[AccurateStrategy] DC migration requested to DC {e.dc} for {phone}. Re-routing...")
+            try:
+                await telegram_client_manager.disconnect_client(account["id"])
+                client2 = await telegram_client_manager.get_client(account)
+                await client2._switch_dc(e.dc)
+                await asyncio.sleep(0.5)
+                # Retry inside the correct DC
+                return await self.check(client2, phone, account)
+            except Exception as migrate_error:
+                logger.error(f"[AccurateStrategy] DC migration failed: {migrate_error}")
+                return {
+                    "status": "ERROR",
+                    "phone": phone,
+                    "status_text": f"❌ فشل الاتصال بـ DC {e.dc}"
+                }
+
+        except FloodWaitError as e:
+            await flood_manager.set_flood(account["id"], e.seconds)
+            return {
+                "status": "FLOOD_WAIT",
+                "seconds": e.seconds,
+                "phone": phone,
+                "status_text": f"🚫 حظر مؤقت {e.seconds} ثانية"
+            }
 
         except Exception as e:
             try:
@@ -104,37 +188,146 @@ class TelegramChecker:
                 pass
 
             error_message = str(e)
+            
+            # If the checker account itself is banned/deactivated
+            if "BANNED" in error_message.upper() or "AUTH_KEY_UNREGISTERED" in error_message.upper():
+                await account_manager.disable_account(account["id"])
+                return {
+                    "status": "ERROR",
+                    "phone": phone,
+                    "status_text": "❌ حساب الفاحص تالف وتلف"
+                }
+
             return {
-                "status": "UNKNOWN_ERROR",
+                "status": "ERROR",
                 "phone": phone,
                 "status_text": f"⚙️ خطأ من السيرفر: {error_message}"
             }
 
+
+class HybridStrategy(BaseCheckStrategy):
+    """
+    Strategy 2: Smart Verification (Hybrid)
+    Executes SilentStrategy first.
+    If the result is UNKNOWN, upgrades to AccurateStrategy (send_code_request) for unresolved cases only.
+    """
+    def __init__(self):
+        self.silent = SilentStrategy()
+        self.accurate = AccurateStrategy()
+
+    async def check(self, client, phone, account):
+        # Phase 1: Silent check (Import contacts)
+        res = await self.silent.check(client, phone, account)
+        
+        # If successfully resolved (Registered / Error / Banned / Flood), return immediately
+        if res["status"] in ["HAS_SESSION", "FLOOD_WAIT", "ERROR"]:
+            return res
+
+        # Phase 2: If status is UNKNOWN, run the Accurate verification
+        if res["status"] == "UNKNOWN":
+            logger.info(f"[HybridStrategy] Silent check returned UNKNOWN for {phone}. Upgrading to Accurate check...")
+            return await self.accurate.check(client, phone, account)
+
+        return res
+
+# =====================================================================
+# Main Engine: TelegramCheckEngine
+# =====================================================================
+
+class TelegramCheckEngine:
+    def __init__(self):
+        self.strategies = {
+            "silent": SilentStrategy(),
+            "hybrid": HybridStrategy(),
+            "accurate": AccurateStrategy()
+        }
+
+    def get_mode(self):
+        """
+        Fetches the active mode from DB or environment variables.
+        Supported modes: "silent", "hybrid", "accurate".
+        Default: "hybrid".
+        """
+        try:
+            import database as db
+            mode = db.get_setting("checking_mode")
+            if mode and mode.lower() in self.strategies:
+                return mode.lower()
+        except Exception as e:
+            logger.warning(f"[Engine] Failed to get checking_mode from DB: {e}")
+
+        env_mode = os.getenv("CHECKING_MODE")
+        if env_mode and env_mode.lower() in self.strategies:
+            return env_mode.lower()
+
+        return "hybrid"
+
+    async def check_phone(self, account, phone):
+        mode = self.get_mode()
+        strategy = self.strategies[mode]
+        logger.info(f"[Engine] Using strategy: '{strategy.__class__.__name__}' (Mode: '{mode}') to verify {phone}")
+
+        try:
+            client = await telegram_client_manager.get_client(account)
+        except SessionUnauthorizedError:
+            await account_manager.disable_account(account["id"])
+            return {
+                "status": "ACCOUNT_DISABLED",
+                "phone": phone,
+                "status_text": "❌ حساب الفاحص تالف وتم تعطيله"
+            }
+        except Exception as e:
+            return {
+                "status": "ERROR",
+                "phone": phone,
+                "status_text": f"❌ فشل الاتصال بالفاحص: {e}"
+            }
+
+        return await strategy.check(client, phone, account)
+
+
+# =====================================================================
+# Legacy Adapter for Backward Compatibility
+# =====================================================================
+
+class TelegramChecker:
+    def __init__(self):
+        self.engine = TelegramCheckEngine()
+
     async def get_available_account(self):
-        account = await account_manager.get_available_account()
-        return account
+        return await account_manager.get_available_account()
 
     async def wait_for_account(self):
+        """
+        Smart Wait: If all checkers are in FloodWait, sleeps precisely 
+        until the earliest flooded account becomes free.
+        """
         while True:
             account = await self.get_available_account()
             if account:
                 return account
-            await asyncio.sleep(5)
+            
+            sleep_time = await account_manager.get_seconds_until_next_available()
+            logger.warning(f"[Checker] All accounts in FloodWait or disabled. Sleeping smartly for {sleep_time:.2f}s...")
+            await asyncio.sleep(sleep_time)
+
+    async def check_phone(self, account, phone):
+        return await self.engine.check_phone(account, phone)
 
     async def check_numbers(self, phones, callback=None):
         results = []
         for phone in phones:
             account = await self.wait_for_account()
             result = await self.check_phone(account, phone)
-
-            if result["status"] in ["FLOOD", "ACCOUNT_DISABLED"]:
-                continue
-
+            
+            # Retry if the current checker account hits Flood or gets deactivated during the request
+            if result["status"] in ["FLOOD_WAIT", "ACCOUNT_DISABLED"]:
+                account_retry = await self.wait_for_account()
+                result = await self.check_phone(account_retry, phone)
+                
             results.append(result)
-
             if callback:
                 await callback(result)
-
         return results
 
 
@@ -153,13 +346,14 @@ class BatchChecker:
 
                 result = await self.checker.check_phone(account, phone)
 
-                if result["status"] == "FLOOD":
-                    await flood_manager.set_flood(account["id"], result["seconds"])
+                if result["status"] in ["FLOOD_WAIT", "FLOOD"]:
+                    seconds = result.get("seconds", 60)
+                    await flood_manager.set_flood(account["id"], seconds)
                     queue.put_nowait(phone)
                     queue.task_done()
                     break
 
-                elif result["status"] == "ACCOUNT_DISABLED":
+                elif result["status"] in ["ACCOUNT_DISABLED", "CHECKER_BANNED"]:
                     queue.put_nowait(phone)
                     queue.task_done()
                     break

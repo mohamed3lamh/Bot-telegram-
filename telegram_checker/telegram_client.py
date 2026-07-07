@@ -38,8 +38,20 @@ class TelegramClientManager:
 
                     if await client.is_user_authorized():
                         return client
+                    else:
+                        # غير مخول، نقوم بقطع اتصاله لعدم تسريب المقبس
+                        try:
+                            await client.disconnect()
+                        except Exception:
+                            pass
+                        self.clients.pop(account_id, None)
                 except Exception:
-                    pass
+                    # أي استثناء آخر (فشل شبكة، إلخ)، نقوم بقطع الاتصال وإزالته من الكاش لإعادة المحاولة من جديد
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+                    self.clients.pop(account_id, None)
 
             client = TelegramClient(
                 StringSession(account["session"]),

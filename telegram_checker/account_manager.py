@@ -134,4 +134,32 @@ class AccountManager:
         await asyncio.to_thread(_enable)
         self.invalidate_accounts_cache()  # إبطال الكاش فوراً
 
+    async def get_seconds_until_next_available(self):
+        """
+        في حال كانت جميع الحسابات داخل FloodWait، ترجع هذه الدالة عدد الثواني
+        المتبقية لأول حساب ينتهي حظره المؤقت لكي ينام نظام الفحص بأمان.
+        """
+        accounts = await self.get_all_accounts()
+        if not accounts:
+            return 10  # قيمة افتراضية في حال عدم وجود أي حسابات مضافة
+
+        now = self._naive_utcnow()
+        flooded = [a for a in accounts if not self._is_flood_expired(a["flood_until"], now)]
+        if not flooded:
+            return 5  # هناك حسابات حرة ولكن ربما معطلة أو غير متوفرة لسبب آخر، ننام 5 ثوانٍ
+
+        remaining_times = []
+        for a in flooded:
+            flood_until = a["flood_until"]
+            if flood_until is not None:
+                if flood_until.tzinfo is not None:
+                    flood_until = flood_until.astimezone(timezone.utc).replace(tzinfo=None)
+                diff = (flood_until - now).total_seconds()
+                if diff > 0:
+                    remaining_times.append(diff)
+
+        if not remaining_times:
+            return 5
+        return min(remaining_times)
+
 account_manager = AccountManager()
