@@ -103,16 +103,28 @@ class TelegramChecker:
                 "phone": phone
             }
 
-        except Exception as e:
+            except Exception as e:
             try:
                 await telegram_client_manager.disconnect_client(account["id"])
             except Exception:
                 pass
 
+            # 🛠️ تعديل هندسي: استخراج نص الخطأ الصريح القادم من تيليجرام لمعرفة السبب بدقة
+            error_message = str(e)
+            
+            # إذا كان الخطأ بسبب حظر حساب الفاحص نفسه
+            if "BANNED" in error_message.upper() or "AUTH_KEY_UNREGISTERED" in error_message.upper():
+                await account_manager.disable_account(account["id"])
+                return {
+                    "status": "CHECKER_BANNED",
+                    "phone": phone,
+                    "status_text": "❌ حساب الفاحص نفسه تم حظره الآن وتلف"
+                }
+
             return {
                 "status": "UNKNOWN_ERROR",
                 "phone": phone,
-                "status_text": f"⚙️ خطأ غير معروف: {str(e)}"
+                "status_text": f"⚙️ خطأ من السيرفر: {error_message}"  # سيطبع لك نص الخطأ الحقيقي في التلغرام
             }
 
     async def get_available_account(self):
