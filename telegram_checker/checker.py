@@ -8,8 +8,7 @@ from telethon import functions, types, TelegramClient
 from telethon.sessions import StringSession
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
-    SessionPasswordNeededError, PhoneNumberInvalidError,
-    PhoneNumberUnoccupiedError, PhoneMigrateError
+    SessionPasswordNeededError, PhoneNumberInvalidError, PhoneMigrateError
 )
 from telethon.tl.types.auth import (
     SentCodeTypeApp, SentCodeTypeSms, SentCodeTypeFlashCall, SentCodeTypeMissedCall, SentCodeTypeEmailCode
@@ -230,18 +229,6 @@ class AccurateStrategy(BaseCheckStrategy):
                 "status": "HAS_SESSION",
                 "phone": phone,
                 "status_text": "⚠️ مسجل"
-            }
-
-        except PhoneNumberUnoccupiedError as e:
-            logger.info(
-                f"Telegram Exception caught: PhoneNumberUnoccupiedError\n"
-                f"\nFINAL RESULT\n"
-                f"UNKNOWN\n"
-            )
-            return {
-                "status": "UNKNOWN",
-                "phone": phone,
-                "status_text": "⚪️ غير معروف / معلق"
             }
 
         except PhoneNumberBannedError as e:
