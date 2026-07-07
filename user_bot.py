@@ -417,61 +417,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         await show_country_settings(update, user_id, country_code)
         return
 
-    elif data.startswith("set_working_"):
-        country_code = data.replace("set_working_", "")
-        await asyncio.to_thread(db.update_country_settings, user_id, country_code, number_type="working")
-        await query.answer("✔️ تم تعيين: شغال فقط", show_alert=False)
-        await show_country_settings(update, user_id, country_code)
-        return
 
-    elif data.startswith("set_banned_"):
-        country_code = data.replace("set_banned_", "")
-        await asyncio.to_thread(db.update_country_settings, user_id, country_code, number_type="banned")
-        await query.answer("✔️ تم تعيين: محظور فقط", show_alert=False)
-        await show_country_settings(update, user_id, country_code)
-        return
-
-    elif data.startswith("cycle_session_"):
-        country_code = data.replace("cycle_session_", "")
-        settings = await asyncio.to_thread(db.get_country_settings, user_id, country_code)
-        current = settings.get("session_status", "all")
-        # الدورة: all -> no_session -> has_session -> all
-        next_status = {"all": "no_session", "no_session": "has_session", "has_session": "all"}
-        new_status = next_status.get(current, "all")
-        await asyncio.to_thread(db.update_country_settings, user_id, country_code, session_status=new_status)
-        status_names = {"all": "الاثنين معاً", "no_session": "بدون جلسة فقط", "has_session": "لديه جلسة فقط"}
-        await query.answer(f"✔️ تم تعيين: {status_names.get(new_status, new_status)}", show_alert=False)
-        await show_country_settings(update, user_id, country_code)
-        return
-        
-    elif data.startswith("set_number_type_"):
-        country_code = data.replace("set_number_type_", "")
-        await show_number_type_options(update, user_id, country_code)
-        return
-
-    elif data.startswith("save_number_type_"):
-        # الصيغة: save_number_type_COUNTRYCODE_VALUE
-        parts = data.split("_")
-        country_code = parts[3]
-        value = parts[4]
-        await asyncio.to_thread(db.update_country_settings, user_id, country_code, number_type=value)
-        await query.answer("✔️ تم تحديث نوع الرقم", show_alert=True)
-        await show_country_settings(update, user_id, country_code)
-        return
-
-    elif data.startswith("set_session_status_"):
-        country_code = data.replace("set_session_status_", "")
-        await show_session_status_options(update, user_id, country_code)
-        return
-
-    elif data.startswith("save_session_status_"):
-        parts = data.split("_")
-        country_code = parts[3]
-        value = parts[4]
-        await asyncio.to_thread(db.update_country_settings, user_id, country_code, session_status=value)
-        await query.answer("✔️ تم تحديث حالة الجلسة", show_alert=True)
-        await show_country_settings(update, user_id, country_code)
-        return
     elif data.startswith("add_country_page_"):
         page = int(data.split("_")[-1])
         items_per_page = 23
@@ -612,41 +558,7 @@ async def safe_answer(query, text=None, show_alert=False):
     except Exception as e:
         logger.warning(f"Failed to answer callback query: {e}")
 
-async def show_number_type_options(update: Update, user_id: int, country_code: str):
-    """عرض خيارات نوع الرقم"""
-    country_name = country_code
-    for c in ALL_COUNTRIES:
-        if c["code"] == country_code:
-            country_name = c["name"]
-            break
-    
-    text = f"📱 **اختر نوع الرقم لـ {country_name}:**"
-    keyboard = [
-        [InlineKeyboardButton("📱 شغال", callback_data=f"save_number_type_{country_code}_working")],
-        [InlineKeyboardButton("🚫 محظور", callback_data=f"save_number_type_{country_code}_banned")],
-        [InlineKeyboardButton("🌐 الكل", callback_data=f"save_number_type_{country_code}_all")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data=f"country_settings_{country_code}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
 
-async def show_session_status_options(update: Update, user_id: int, country_code: str):
-    """عرض خيارات حالة الجلسة"""
-    country_name = country_code
-    for c in ALL_COUNTRIES:
-        if c["code"] == country_code:
-            country_name = c["name"]
-            break
-    
-    text = f"🔍 **اختر حالة الجلسة لـ {country_name}:**"
-    keyboard = [
-        [InlineKeyboardButton("✅ بدون جلسة", callback_data=f"save_session_status_{country_code}_no_session")],
-        [InlineKeyboardButton("👤 لديه جلسة", callback_data=f"save_session_status_{country_code}_has_session")],
-        [InlineKeyboardButton("🔄 الاثنين معاً", callback_data=f"save_session_status_{country_code}_all")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data=f"country_settings_{country_code}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
 # ==================== 6. عرض وإدارة الدول المختارة ====================
 async def show_manage_countries(update: Update, user_id: int):
     """عرض قائمة الدول المختارة مع أيقونات الإعدادات"""
@@ -680,50 +592,12 @@ async def show_country_settings(update: Update, user_id: int, country_code: str)
             country_flag = c["name"].split(" ")[-1] if " " in c["name"] else "🌐"
             break
     
-    # جلب الإعدادات الحالية
-    settings = await asyncio.to_thread(db.get_country_settings, user_id, country_code)
-    number_type = settings.get("number_type", "all")
-    session_status = settings.get("session_status", "all")
-    
-    # --- تحديد أيقونات الأزرار بناءً على الإعدادات الحالية ---
-    # زر "شغال"
-    if number_type == "working":
-        btn_working = "✅ شغال"
-    else:
-        btn_working = "❌ شغال"
-    
-    # زر "محظور"
-    if number_type == "banned":
-        btn_banned = "✅ محظور"
-    else:
-        btn_banned = "❌ محظور"
-    
-    # زر حالة الجلسة (دورة: all -> no_session -> has_session -> all)
-    if session_status == "all":
-        btn_session = "✅ الاثنين معاً"
-    elif session_status == "no_session":
-        btn_session = "🟢 بدون جلسة فقط"
-    elif session_status == "has_session":
-        btn_session = "🔴 لديه جلسة فقط"
-    else:
-        btn_session = "✅ الاثنين معاً"
-    
     text = (
-        f"🌍 **إعدادات الدولة**\n\n"
-        f"يمكنك تعديل الإعدادات التالية:\n"
-        f"• نوع الرقم: محظور / شغال\n"
-        f"• حالة الجلسة: بدون جلسة / لديه جلسة / الاثنين معاً\n"
-        f"• حذف الدولة من قائمة الصيد"
+        f"🌍 **إعدادات الدولة: {country_name} {country_flag}**\n\n"
+        f"يمكنك حذف الدولة من قائمة الصيد الخاصة بك عبر الضغط على الزر أدناه."
     )
     
     keyboard = [
-        # زر اسم الدولة والعلم في الأعلى (للزينة فقط)
-        [InlineKeyboardButton(f"{country_name} {country_flag}", callback_data="noop")],
-        # زر "شغال" و "محظور" بجانب بعضهما
-        [InlineKeyboardButton(btn_working, callback_data=f"set_working_{country_code}"),
-         InlineKeyboardButton(btn_banned, callback_data=f"set_banned_{country_code}")],
-        # زر حالة الجلسة
-        [InlineKeyboardButton(btn_session, callback_data=f"cycle_session_{country_code}")],
         # زر حذف الدولة
         [InlineKeyboardButton("🗑️ حذف الدولة", callback_data=f"delete_country_{country_code}")],
         # زر الرجوع
