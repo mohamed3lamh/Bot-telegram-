@@ -155,11 +155,11 @@ class AccurateStrategy(BaseCheckStrategy):
     Strategy 3: Accurate Mode
     Directly calls send_code_request via a guest client and determines status.
     - Succeeded with App Type -> HAS_SESSION (⚠️ مسجل)
-    - Succeeded with SMS Type -> NO_SESSION (🆕 غير مسجل)
+    - Succeeded with SMS Type or others -> UNKNOWN (⚪️ غير معروف / معلق)
     - Password Needed -> HAS_SESSION (⚠️ مسجل)
-    - Unoccupied -> NO_SESSION (🆕 غير مسجل)
+    - Unoccupied -> UNKNOWN (⚪️ غير معروف / معلق)
     - Banned -> BANNED (📵 محظور)
-    - Invalid -> INVALID (⚠️ غير صالح)
+    - Invalid or others -> UNKNOWN (⚪️ غير معروف / معلق)
     """
     async def check(self, client, phone, account):
         # Initialize a temporary anonymous guest client
@@ -181,9 +181,9 @@ class AccurateStrategy(BaseCheckStrategy):
     async def _check_with_guest(self, guest_client, phone, account, retry_count=0):
         if retry_count > 3:
             return {
-                "status": "ERROR",
+                "status": "UNKNOWN",
                 "phone": phone,
-                "status_text": "⚙️ خطأ: تجاوز الحد الأقصى لإعادة توجيه DC"
+                "status_text": "⚪️ غير معروف / معلق"
             }
             
         logger.info(f"AccurateStrategy: Calling auth.sendCode via guest client (retry={retry_count})...")
@@ -211,13 +211,13 @@ class AccurateStrategy(BaseCheckStrategy):
             else:
                 logger.info(
                     f"\nFINAL RESULT\n"
-                    f"NO_SESSION\n"
-                    f"Reason: Telegram returned {sent_code_type_name} (unregistered)"
+                    f"UNKNOWN\n"
+                    f"Reason: Telegram returned {sent_code_type_name} (classified as UNKNOWN)"
                 )
                 return {
-                    "status": "NO_SESSION",
+                    "status": "UNKNOWN",
                     "phone": phone,
-                    "status_text": "🆕 غير مسجل"
+                    "status_text": "⚪️ غير معروف / معلق"
                 }
 
         except SessionPasswordNeededError as e:
@@ -234,14 +234,14 @@ class AccurateStrategy(BaseCheckStrategy):
 
         except PhoneNumberUnoccupiedError as e:
             logger.info(
-                f"Telegram Exception caught: PhoneNumberUnoccupiedError (Unregistered)\n"
+                f"Telegram Exception caught: PhoneNumberUnoccupiedError\n"
                 f"\nFINAL RESULT\n"
-                f"NO_SESSION\n"
+                f"UNKNOWN\n"
             )
             return {
-                "status": "NO_SESSION",
+                "status": "UNKNOWN",
                 "phone": phone,
-                "status_text": "🆕 غير مسجل"
+                "status_text": "⚪️ غير معروف / معلق"
             }
 
         except PhoneNumberBannedError as e:
@@ -258,14 +258,14 @@ class AccurateStrategy(BaseCheckStrategy):
 
         except PhoneNumberInvalidError as e:
             logger.info(
-                f"Telegram Exception caught: PhoneNumberInvalidError (Invalid)\n"
+                f"Telegram Exception caught: PhoneNumberInvalidError (Invalid -> UNKNOWN)\n"
                 f"\nFINAL RESULT\n"
-                f"INVALID\n"
+                f"UNKNOWN\n"
             )
             return {
-                "status": "INVALID",
+                "status": "UNKNOWN",
                 "phone": phone,
-                "status_text": "⚠️ غير صالح"
+                "status_text": "⚪️ غير معروف / معلق"
             }
 
         except PhoneMigrateError as e:
@@ -279,9 +279,9 @@ class AccurateStrategy(BaseCheckStrategy):
             except Exception as migrate_error:
                 logger.error(f"PhoneMigrateError retry failed: {migrate_error}")
                 return {
-                    "status": "ERROR",
+                    "status": "UNKNOWN",
                     "phone": phone,
-                    "status_text": f"❌ فشل الاتصال بـ DC {e.new_dc}"
+                    "status_text": "⚪️ غير معروف / معلق"
                 }
 
         except FloodWaitError as e:
@@ -301,17 +301,17 @@ class AccurateStrategy(BaseCheckStrategy):
             error_message = str(e)
             exception_class_name = e.__class__.__name__
             
-            # Check for RECAPTCHA_CHECK signals (which indicates unregistered/signup flow)
+            # Check for RECAPTCHA_CHECK signals
             if "RECAPTCHA" in error_message.upper():
                 logger.info(
-                    f"Telegram Exception caught: {exception_class_name} with RECAPTCHA (Unregistered)\n"
+                    f"Telegram Exception caught: {exception_class_name} with RECAPTCHA -> UNKNOWN\n"
                     f"\nFINAL RESULT\n"
-                    f"NO_SESSION\n"
+                    f"UNKNOWN\n"
                 )
                 return {
-                    "status": "NO_SESSION",
+                    "status": "UNKNOWN",
                     "phone": phone,
-                    "status_text": "🆕 غير مسجل"
+                    "status_text": "⚪️ غير معروف / معلق"
                 }
                 
             logger.info(
@@ -320,12 +320,12 @@ class AccurateStrategy(BaseCheckStrategy):
                 f"Message: {error_message}\n"
                 f"Traceback:\n{traceback.format_exc()}\n"
                 f"\nFINAL RESULT\n"
-                f"ERROR\n"
+                f"UNKNOWN\n"
             )
             return {
-                "status": "ERROR",
+                "status": "UNKNOWN",
                 "phone": phone,
-                "status_text": f"⚙️ خطأ من السيرفر: {error_message}"
+                "status_text": "⚪️ غير معروف / معلق"
             }
 
 
