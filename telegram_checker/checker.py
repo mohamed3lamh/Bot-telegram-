@@ -77,18 +77,29 @@ class SilentStrategy(BaseCheckStrategy):
                 f"Traceback:\n{traceback.format_exc()}"
             )
             
-            # If the checker account itself is banned/deactivated
-            if "BANNED" in error_message.upper() or "AUTH_KEY_UNREGISTERED" in error_message.upper():
+            # If the checker account itself is banned/deactivated/revoked
+            is_checker_dead = (
+                exception_class_name in ["AuthKeyUnregisteredError", "UserDeactivatedError", "SessionRevokedError"]
+                or "BANNED" in error_message.upper()
+                or "AUTH_KEY_UNREGISTERED" in error_message.upper()
+                or "DEACTIVATED" in error_message.upper()
+                or "REVOKED" in error_message.upper()
+            )
+            if is_checker_dead:
                 await account_manager.disable_account(account["id"])
+                try:
+                    await telegram_client_manager.disconnect_client(account["id"])
+                except Exception:
+                    pass
                 logger.info(
                     f"\nFINAL RESULT\n"
-                    f"ERROR\n"
+                    f"ACCOUNT_DISABLED\n"
                     f"Reason: Checker account is banned/unauthorized during SilentStrategy import."
                 )
                 return {
-                    "status": "ERROR",
+                    "status": "ACCOUNT_DISABLED",
                     "phone": phone,
-                    "status_text": "❌ حساب الفاحص تالف وتلف"
+                    "status_text": "❌ حساب الفاحص تالف وتم تعطيله"
                 }
             elif "FLOOD" in error_message.upper() or "FLOOD_WAIT" in error_message.upper():
                 await flood_manager.set_flood(account["id"], 60)
@@ -327,13 +338,25 @@ class AccurateStrategy(BaseCheckStrategy):
                 f"Reason: send_code_request threw generic exception ({exception_class_name})"
             )
             
-            # If the checker account itself is banned/deactivated
-            if "BANNED" in error_message.upper() or "AUTH_KEY_UNREGISTERED" in error_message.upper():
+            # If the checker account itself is banned/deactivated/revoked
+            is_checker_dead = (
+                exception_class_name in ["AuthKeyUnregisteredError", "UserDeactivatedError", "SessionRevokedError"]
+                or "BANNED" in error_message.upper()
+                or "AUTH_KEY_UNREGISTERED" in error_message.upper()
+                or "DEACTIVATED" in error_message.upper()
+                or "REVOKED" in error_message.upper()
+            )
+            if is_checker_dead:
                 await account_manager.disable_account(account["id"])
+                logger.info(
+                    f"\nFINAL RESULT\n"
+                    f"ACCOUNT_DISABLED\n"
+                    f"Reason: Checker account is banned/unauthorized during AccurateStrategy sendCode."
+                )
                 return {
-                    "status": "ERROR",
+                    "status": "ACCOUNT_DISABLED",
                     "phone": phone,
-                    "status_text": "❌ حساب الفاحص تالف وتلف"
+                    "status_text": "❌ حساب الفاحص تالف وتم تعطيله"
                 }
 
             return {

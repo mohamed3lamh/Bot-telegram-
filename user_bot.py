@@ -846,17 +846,27 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
 
             # --- الفحص السريع ---
             status_text = "🔴 حالة غير معروفة"  # افتراضي إذا لم يتم الفحص
-            try:
-                t_get_checker_start = time.perf_counter()
-                account_checker = await telegram_checker.get_available_account()
-                t_get_checker_end = time.perf_counter()
-                
-                logger.info(
-                    f"[PERF_TRACE] [Number: {phone_number}] get_available_account duration: "
-                    f"{t_get_checker_end - t_get_checker_start:.4f}s"
-                )
-                
-                if account_checker:
+            max_retries = 3
+            attempt = 0
+            
+            while attempt < max_retries:
+                try:
+                    t_get_checker_start = time.perf_counter()
+                    account_checker = await telegram_checker.get_available_account()
+                    t_get_checker_end = time.perf_counter()
+                    
+                    logger.info(
+                        f"[PERF_TRACE] [Number: {phone_number}] get_available_account duration: "
+                        f"{t_get_checker_end - t_get_checker_start:.4f}s"
+                    )
+                    
+                    if not account_checker:
+                        logger.warning(
+                            f"[STEP 4] Selected checker account failed.\n"
+                            f"No checker account available for checking."
+                        )
+                        break
+                    
                     t_check_start = time.perf_counter()
                     check_result = await telegram_checker.check_phone(account_checker, phone_number)
                     t_check_end = time.perf_counter()
@@ -872,19 +882,25 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                         status_text = raw_status
                     else:
                         status_text = "⚪️ غير معروف / معلق"
-                else:
+                    
+                    # إذا نجح الفحص بدون تعطل الحساب الفاحص، نخرج من حلقة المحاولة
+                    if check_status not in ["ACCOUNT_DISABLED", "FLOOD_WAIT"]:
+                        break
+                        
                     logger.warning(
-                        f"[STEP 4] Selected checker account failed.\n"
-                        f"No checker account available for checking."
+                        f"⚠️ تنبيه: الحساب الفاحص ID {account_checker.get('id')} فشل/حُظر أثناء الفحص (الحالة: {check_status}). "
+                        f"جاري إعادة المحاولة مع حساب آخر..."
                     )
-            except Exception as e:
-                import traceback
-                logger.error(
-                    f"فحص الرقم {phone_number} فشل مع استثناء:\n"
-                    f"Class: {e.__class__.__name__}\n"
-                    f"Message: {str(e)}\n"
-                    f"Traceback:\n{traceback.format_exc()}"
-                )
+                    attempt += 1
+                except Exception as e:
+                    import traceback
+                    logger.error(
+                        f"❌ خطأ: فحص الرقم {phone_number} فشل مع استثناء (محاولة {attempt + 1}):\n"
+                        f"Class: {e.__class__.__name__}\n"
+                        f"Message: {str(e)}\n"
+                        f"Traceback:\n{traceback.format_exc()}"
+                    )
+                    attempt += 1
                 
             # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة) ---
             country_name = clean_country.upper()
