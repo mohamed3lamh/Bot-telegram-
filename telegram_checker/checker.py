@@ -296,7 +296,37 @@ class TelegramChecker:
     def __init__(self):
         self.engine = TelegramCheckEngine()
 
+    async def _auto_recovery_loop(self):
+        """
+        حلقة خلفية تعمل كل 5 دقائق لمحاولة استعادة الحسابات المعطلة
+        وإعادتها للخدمة تلقائياً في حال عادت للعمل.
+        """
+        await asyncio.sleep(30)  # الانتظار قليلاً عند بدء التشغيل لعدم التضارب
+        while True:
+            try:
+                disabled_accounts = await account_manager.get_all_disabled_accounts()
+                if disabled_accounts:
+                    logger.info(f"[Auto-Recovery] Found {len(disabled_accounts)} disabled accounts. Testing recovery...")
+                    for acc in disabled_accounts:
+                        try:
+                            # محاولة تهيئة الاتصال بدون إثارة أخطاء
+                            client = await telegram_client_manager.get_client(acc)
+                            if await client.is_user_authorized():
+                                logger.info(f"[Auto-Recovery] Account {acc['phone']} is authorized! Recovering...")
+                                await account_manager.enable_account(acc["id"])
+                        except SessionUnauthorizedError:
+                            pass
+                        except Exception as e:
+                            logger.warning(f"[Auto-Recovery] Failed recovery check for {acc['phone']}: {e}")
+            except Exception as e:
+                logger.error(f"[Auto-Recovery] Error in recovery loop: {e}")
+            
+            await asyncio.sleep(300) # فحص كل 5 دقائق
+
     async def get_available_account(self):
+        if not hasattr(self, "_recovery_task_started"):
+            self._recovery_task_started = True
+            asyncio.create_task(self._auto_recovery_loop())
         return await account_manager.get_available_account()
 
     async def wait_for_account(self):
@@ -314,6 +344,9 @@ class TelegramChecker:
             await asyncio.sleep(sleep_time)
 
     async def check_phone(self, account, phone):
+        if not hasattr(self, "_recovery_task_started"):
+            self._recovery_task_started = True
+            asyncio.create_task(self._auto_recovery_loop())
         return await self.engine.check_phone(account, phone)
 
     async def check_numbers(self, phones, callback=None):

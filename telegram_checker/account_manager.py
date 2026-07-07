@@ -11,6 +11,8 @@ class AccountManager:
         self._cache_lock = asyncio.Lock()  # يمنع Cache Stampede عند تزامن أول قراءة بعد انتهاء الكاش
         self._rr_index = 0  # مؤشر Round-Robin لتوزيع الحمل بين الحسابات المتاحة
         self._rr_lock = asyncio.Lock()
+        self._last_used_timestamps = {}
+        self._COOLDOWN_PERIOD = 10  # ثوانٍ فترة التبريد بين كل عملية فحص على نفس الحساب لمنع حظره مؤقتاً
 
     @staticmethod
     def _naive_utcnow():
@@ -77,8 +79,8 @@ class AccountManager:
     async def get_available_account(self):
         """
         يرجع حساباً صالحاً للاستخدام (ليس معطلاً وليس داخل FloodWait)،
-        بتوزيع Round-Robin بين الحسابات المتاحة بدل إرجاع نفس الحساب الأول دائماً،
-        لتفادي تركيز كل حمل الفحص على حساب واحد وتسريع دخوله في FloodWait.
+        بتوزيع Round-Robin بين الحسابات المتاحة ومطابقة معدل الطلبات (Rate Limiting)
+        لتوزيع الحمل بالتساوي ومنع الحظر الفردي.
         """
         accounts = await self.get_all_accounts()
         if not accounts:
@@ -89,9 +91,22 @@ class AccountManager:
         if not available:
             return None
 
+        # تطبيق الـ Rate Limiter: تصفية الحسابات التي انتهت فترة تبريدها (Cooldown)
+        now_mono = time.monotonic()
+        non_cooldown = [
+            a for a in available
+            if now_mono - self._last_used_timestamps.get(a["id"], 0) >= self._COOLDOWN_PERIOD
+        ]
+
+        # إذا كانت جميع الحسابات في فترة التبريد، نأخذ الحسابات المتاحة بالكامل لتفادي التعليق (Fallback)
+        targets = non_cooldown if non_cooldown else available
+
         async with self._rr_lock:
-            self._rr_index = (self._rr_index + 1) % len(available)
-            chosen = available[self._rr_index % len(available)]
+            self._rr_index = (self._rr_index + 1) % len(targets)
+            chosen = targets[self._rr_index % len(targets)]
+
+        # تحديث وقت الاستخدام للحساب المختار لتطبيق حد المعدل في المرة القادمة
+        self._last_used_timestamps[chosen["id"]] = now_mono
         return chosen
 
     # 🚀 الدالة المضافة لحل مشكلة الـ Logs وتطابق الأسماء
@@ -161,5 +176,34 @@ class AccountManager:
         if not remaining_times:
             return 5
         return min(remaining_times)
+
+    async def get_all_disabled_accounts(self):
+        """جلب الحسابات المعطلة لمحاولة استعادتها تلقائياً."""
+        def _fetch():
+            with get_connection() as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute("""
+                        SELECT id, api_id, api_hash, string_session, is_active, flood_until, phone
+                        FROM telegram_accounts
+                        WHERE is_active = FALSE
+                        ORDER BY id ASC
+                    """)
+                    return cur.fetchall()
+                finally:
+                    cur.close()
+        rows = await asyncio.to_thread(_fetch)
+        accounts = []
+        for row in rows:
+            accounts.append({
+                "id": row[0],
+                "api_id": row[1],
+                "api_hash": row[2],
+                "session": row[3],
+                "is_active": row[4],
+                "flood_until": row[5],
+                "phone": row[6]
+            })
+        return accounts
 
 account_manager = AccountManager()
