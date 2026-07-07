@@ -4,7 +4,8 @@ import logging
 import time
 import traceback
 import datetime
-from telethon import functions, types
+from telethon import functions, types, TelegramClient
+from telethon.sessions import StringSession
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
     SessionPasswordNeededError, PhoneNumberInvalidError,
@@ -152,7 +153,7 @@ class SilentStrategy(BaseCheckStrategy):
 class AccurateStrategy(BaseCheckStrategy):
     """
     Strategy 3: Accurate Mode
-    Directly calls send_code_request and determines status via responses or exceptions.
+    Directly calls send_code_request via a guest client and determines status.
     - Succeeded with App Type -> HAS_SESSION (⚠️ مسجل)
     - Succeeded with SMS Type -> NO_SESSION (🆕 غير مسجل)
     - Password Needed -> HAS_SESSION (⚠️ مسجل)
@@ -161,32 +162,40 @@ class AccurateStrategy(BaseCheckStrategy):
     - Invalid -> INVALID (⚠️ غير صالح)
     """
     async def check(self, client, phone, account):
-        logger.info("Calling auth.sendCode...")
+        api_id = account["api_id"]
+        api_hash = account["api_hash"]
+        
+        logger.info(f"AccurateStrategy: Creating guest client with API_ID {api_id}...")
+        guest_client = TelegramClient(StringSession(), api_id, api_hash)
+        await guest_client.connect()
+        
+        try:
+            return await self._check_with_guest(guest_client, phone, account)
+        finally:
+            try:
+                await guest_client.disconnect()
+            except Exception:
+                pass
+
+    async def _check_with_guest(self, guest_client, phone, account, retry_count=0):
+        if retry_count > 3:
+            return {
+                "status": "ERROR",
+                "phone": phone,
+                "status_text": "⚙️ خطأ: تجاوز الحد الأقصى لإعادة توجيه DC"
+            }
+            
+        logger.info(f"AccurateStrategy: Calling auth.sendCode via guest client (retry={retry_count})...")
         try:
             t_send_code_start = time.perf_counter()
-            sent_code = await client.send_code_request(phone)
+            sent_code = await guest_client.send_code_request(phone)
             t_send_code_end = time.perf_counter()
 
-            # Print raw response object
             logger.info(f"Telegram Raw Response:\n{repr(sent_code)}")
 
-            # Differentiate SentCode types
             sent_code_type_name = sent_code.type.__class__.__name__
             is_app = isinstance(sent_code.type, SentCodeTypeApp)
-            is_sms = isinstance(sent_code.type, SentCodeTypeSms)
-            is_flash = isinstance(sent_code.type, SentCodeTypeFlashCall)
-            is_missed = isinstance(sent_code.type, SentCodeTypeMissedCall)
-            is_email = isinstance(sent_code.type, SentCodeTypeEmailCode)
-
-            logger.info(
-                f"SentCode Type: {sent_code_type_name}\n"
-                f"SentCodeTypeApp={is_app}\n"
-                f"SentCodeTypeSms={is_sms}\n"
-                f"SentCodeTypeFlashCall={is_flash}\n"
-                f"SentCodeTypeMissedCall={is_missed}\n"
-                f"SentCodeTypeEmailCode={is_email}"
-            )
-
+            
             if is_app:
                 logger.info(
                     f"\nFINAL RESULT\n"
@@ -202,7 +211,7 @@ class AccurateStrategy(BaseCheckStrategy):
                 logger.info(
                     f"\nFINAL RESULT\n"
                     f"NO_SESSION\n"
-                    f"Reason: Telegram returned {sent_code_type_name}"
+                    f"Reason: Telegram returned {sent_code_type_name} (unregistered)"
                 )
                 return {
                     "status": "NO_SESSION",
@@ -212,13 +221,9 @@ class AccurateStrategy(BaseCheckStrategy):
 
         except SessionPasswordNeededError as e:
             logger.info(
-                f"Telegram Exception caught:\n"
-                f"Class: SessionPasswordNeededError\n"
-                f"Message: {str(e)}\n"
-                f"Traceback:\n{traceback.format_exc()}\n"
+                f"Telegram Exception caught: SessionPasswordNeededError (Registered)\n"
                 f"\nFINAL RESULT\n"
                 f"HAS_SESSION\n"
-                f"Reason: send_code_request threw SessionPasswordNeededError"
             )
             return {
                 "status": "HAS_SESSION",
@@ -228,13 +233,9 @@ class AccurateStrategy(BaseCheckStrategy):
 
         except PhoneNumberUnoccupiedError as e:
             logger.info(
-                f"Telegram Exception caught:\n"
-                f"Class: PhoneNumberUnoccupiedError\n"
-                f"Message: {str(e)}\n"
-                f"Traceback:\n{traceback.format_exc()}\n"
+                f"Telegram Exception caught: PhoneNumberUnoccupiedError (Unregistered)\n"
                 f"\nFINAL RESULT\n"
                 f"NO_SESSION\n"
-                f"Reason: send_code_request threw PhoneNumberUnoccupiedError"
             )
             return {
                 "status": "NO_SESSION",
@@ -244,13 +245,9 @@ class AccurateStrategy(BaseCheckStrategy):
 
         except PhoneNumberBannedError as e:
             logger.info(
-                f"Telegram Exception caught:\n"
-                f"Class: PhoneNumberBannedError\n"
-                f"Message: {str(e)}\n"
-                f"Traceback:\n{traceback.format_exc()}\n"
+                f"Telegram Exception caught: PhoneNumberBannedError (Banned)\n"
                 f"\nFINAL RESULT\n"
                 f"BANNED\n"
-                f"Reason: send_code_request threw PhoneNumberBannedError"
             )
             return {
                 "status": "BANNED",
@@ -260,13 +257,9 @@ class AccurateStrategy(BaseCheckStrategy):
 
         except PhoneNumberInvalidError as e:
             logger.info(
-                f"Telegram Exception caught:\n"
-                f"Class: PhoneNumberInvalidError\n"
-                f"Message: {str(e)}\n"
-                f"Traceback:\n{traceback.format_exc()}\n"
+                f"Telegram Exception caught: PhoneNumberInvalidError (Invalid)\n"
                 f"\nFINAL RESULT\n"
                 f"INVALID\n"
-                f"Reason: send_code_request threw PhoneNumberInvalidError"
             )
             return {
                 "status": "INVALID",
@@ -276,26 +269,14 @@ class AccurateStrategy(BaseCheckStrategy):
 
         except PhoneMigrateError as e:
             logger.warning(
-                f"Telegram Exception caught:\n"
-                f"Class: PhoneMigrateError\n"
-                f"Message: {str(e)}\n"
-                f"Traceback:\n{traceback.format_exc()}\n"
-                f"DC migration requested to DC {e.new_dc} for {phone}. Re-routing..."
+                f"PhoneMigrateError: DC migration requested to DC {e.new_dc} for {phone}. Re-routing..."
             )
             try:
-                await telegram_client_manager.disconnect_client(account["id"])
-                client2 = await telegram_client_manager.get_client(account)
-                await client2._switch_dc(e.new_dc)
+                await guest_client._switch_dc(e.new_dc)
                 await asyncio.sleep(0.5)
-                # Retry inside correct DC
-                return await self.check(client2, phone, account)
+                return await self._check_with_guest(guest_client, phone, account, retry_count + 1)
             except Exception as migrate_error:
-                logger.error(
-                    f"PhoneMigrateError retry failed:\n"
-                    f"Class: {migrate_error.__class__.__name__}\n"
-                    f"Message: {str(migrate_error)}\n"
-                    f"Traceback:\n{traceback.format_exc()}"
-                )
+                logger.error(f"PhoneMigrateError retry failed: {migrate_error}")
                 return {
                     "status": "ERROR",
                     "phone": phone,
@@ -304,15 +285,10 @@ class AccurateStrategy(BaseCheckStrategy):
 
         except FloodWaitError as e:
             logger.info(
-                f"Telegram Exception caught:\n"
-                f"Class: FloodWaitError\n"
-                f"Message: {str(e)}\n"
-                f"Traceback:\n{traceback.format_exc()}\n"
+                f"Telegram Exception caught: FloodWaitError ({e.seconds}s)\n"
                 f"\nFINAL RESULT\n"
                 f"FLOOD_WAIT\n"
-                f"Reason: send_code_request threw FloodWaitError ({e.seconds} seconds)"
             )
-            await flood_manager.set_flood(account["id"], e.seconds)
             return {
                 "status": "FLOOD_WAIT",
                 "seconds": e.seconds,
@@ -321,13 +297,22 @@ class AccurateStrategy(BaseCheckStrategy):
             }
 
         except Exception as e:
-            try:
-                await telegram_client_manager.disconnect_client(account["id"])
-            except Exception:
-                pass
-
             error_message = str(e)
             exception_class_name = e.__class__.__name__
+            
+            # Check for RECAPTCHA_CHECK signals (which indicates unregistered/signup flow)
+            if "RECAPTCHA" in error_message.upper():
+                logger.info(
+                    f"Telegram Exception caught: {exception_class_name} with RECAPTCHA (Unregistered)\n"
+                    f"\nFINAL RESULT\n"
+                    f"NO_SESSION\n"
+                )
+                return {
+                    "status": "NO_SESSION",
+                    "phone": phone,
+                    "status_text": "🆕 غير مسجل"
+                }
+                
             logger.info(
                 f"Telegram Exception caught:\n"
                 f"Class: {exception_class_name}\n"
@@ -335,30 +320,7 @@ class AccurateStrategy(BaseCheckStrategy):
                 f"Traceback:\n{traceback.format_exc()}\n"
                 f"\nFINAL RESULT\n"
                 f"ERROR\n"
-                f"Reason: send_code_request threw generic exception ({exception_class_name})"
             )
-            
-            # If the checker account itself is banned/deactivated/revoked
-            is_checker_dead = (
-                exception_class_name in ["AuthKeyUnregisteredError", "UserDeactivatedError", "SessionRevokedError"]
-                or "BANNED" in error_message.upper()
-                or "AUTH_KEY_UNREGISTERED" in error_message.upper()
-                or "DEACTIVATED" in error_message.upper()
-                or "REVOKED" in error_message.upper()
-            )
-            if is_checker_dead:
-                await account_manager.disable_account(account["id"])
-                logger.info(
-                    f"\nFINAL RESULT\n"
-                    f"ACCOUNT_DISABLED\n"
-                    f"Reason: Checker account is banned/unauthorized during AccurateStrategy sendCode."
-                )
-                return {
-                    "status": "ACCOUNT_DISABLED",
-                    "phone": phone,
-                    "status_text": "❌ حساب الفاحص تالف وتم تعطيله"
-                }
-
             return {
                 "status": "ERROR",
                 "phone": phone,
