@@ -7,6 +7,7 @@ from telethon.errors import (
     PhoneNumberUnoccupiedError,
     PhoneNumberFloodError,
     PhoneNumberInvalidError,
+    PhoneMigrateError,
     FloodWaitError,
 )
 import database as db
@@ -126,6 +127,9 @@ class CheckerManager:
             acc.total_checked += 1
             logger.info(f"Result for {phone_number}: not_registered (invalid number)")
             return "not_registered"
+        except PhoneMigrateError as e:
+            logger.warning(f"Result for {phone_number}: unknown (PhoneMigrateError to DC {e.new_dc})")
+            return "unknown"
         except FloodWaitError as e:
             acc.flood_errors += 1
             logger.warning(f"Checker #{acc.db_id} flood wait {e.seconds}s (error #{acc.flood_errors})")
