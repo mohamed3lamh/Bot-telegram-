@@ -62,7 +62,12 @@ class CheckerManager:
         try:
             session_path = os.path.join(SESSION_DIR, f"checker_{acc.db_id}")
             acc.client = TelegramClient(session_path, acc.api_id, acc.api_hash)
-            await acc.client.start(phone=acc.phone)
+            await acc.client.connect()
+            if not await acc.client.is_user_authorized():
+                logger.warning(f"Checker account #{acc.db_id} session not authorized, skipping")
+                await acc.client.disconnect()
+                acc.client = None
+                return
             acc.connected = True
             logger.info(f"Checker account #{acc.db_id} ({acc.phone}) connected successfully")
         except Exception as e:
@@ -129,11 +134,21 @@ class CheckerManager:
         self._counter += 1
         return active[idx]
 
-    async def add_account(self, api_id, api_hash, phone):
+    async def add_account(self, api_id, api_hash, phone, session_source_path=None):
         db.add_checker_account(api_id, api_hash, phone)
         self.load_from_db()
+        # العثور على الحساب المضاف حديثاً
         for acc in self.accounts.values():
-            if acc.phone == phone and acc.is_active and not acc.connected:
+            if acc.phone == phone and acc.api_id == api_id:
+                if session_source_path:
+                    # نسخ الجلسة المصرح بها من عملية الإعداد
+                    import shutil
+                    dest = os.path.join(SESSION_DIR, f"checker_{acc.db_id}.session")
+                    try:
+                        shutil.copy2(session_source_path, dest)
+                    except Exception as e:
+                        logger.warning(f"Failed to copy session for account #{acc.db_id}: {e}")
+                        break
                 await self._start_client(acc)
                 break
 

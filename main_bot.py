@@ -430,6 +430,7 @@ async def prompt_edit_setting(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ---------- إدارة الحسابات الفاحصة (Telethon) ----------
 async def show_checker_accounts(update: Update):
     query = update.callback_query
+    checker_manager.load_from_db()
     accounts = await asyncio.to_thread(db.get_all_checker_accounts)
     if not accounts:
         text = "🕵️ **لا توجد حسابات فاحصة حالياً**\n\nأضف حساباً جديداً للبدء بفحص الأرقام عبر Telethon."
@@ -461,12 +462,14 @@ def mask_phone(phone: str) -> str:
 
 async def handle_add_checker_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    context.user_data["checker_step"] = "api_id"
+    context.user_data["checker_step"] = "data"
     context.user_data["checker_data"] = {}
     await query.message.reply_text(
-        "📝 **إضافة حساب فاحص جديد**\n\n"
-        "الرجاء إرسال `api_id` من my.telegram.org:\n"
-        "(مثال: `1234567`)"
+        "🚀 **نظام ربط حساب الفحص التلقائي**\n\n"
+        "أرسل بيانات الحساب الفاحص بالصيغة التالية تماماً:\n"
+        "`الرقم,api_id,api_hash`\n\n"
+        "مثال:\n"
+        "`+967777777777,28412234,b3a6c98ea...`"
     )
 
 async def handle_checker_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -479,43 +482,50 @@ async def handle_checker_text_input(update: Update, context: ContextTypes.DEFAUL
 
     text = update.message.text.strip()
 
-    if step == "api_id":
-        if not text.isdigit():
-            await update.message.reply_text("❌ api_id يجب أن يكون أرقاماً فقط. أرسل api_id الصحيح:")
+    if step == "data":
+        # تنسيق: phone,api_id,api_hash
+        parts = [p.strip() for p in text.split(",")]
+        if len(parts) != 3:
+            await update.message.reply_text(
+                "❌ صيغة خاطئة. أرسل البيانات بالشكل:\n"
+                "`الرقم,api_id,api_hash`\n"
+                "مثال: `+967777777777,28412234,b3a6c98ea...`"
+            )
             return
-        context.user_data["checker_data"]["api_id"] = int(text)
-        context.user_data["checker_step"] = "api_hash"
-        await update.message.reply_text("✅ تم استلام api_id\n\nالآن أرسل `api_hash` من my.telegram.org:")
-
-    elif step == "api_hash":
-        context.user_data["checker_data"]["api_hash"] = text
-        context.user_data["checker_step"] = "phone"
-        await update.message.reply_text("✅ تم استلام api_hash\n\nالآن أرسل رقم الهاتف (مثال: `+201234567890`):")
-
-    elif step == "phone":
-        phone = text
+        phone, api_id_str, api_hash = parts
+        if not api_id_str.isdigit():
+            await update.message.reply_text("❌ api_id يجب أن يكون أرقاماً فقط.")
+            return
+        api_id = int(api_id_str)
         context.user_data["checker_data"]["phone"] = phone
-        # Start Telethon connection and send code
-        try:
-            api_id = context.user_data["checker_data"]["api_id"]
-            api_hash = context.user_data["checker_data"]["api_hash"]
+        context.user_data["checker_data"]["api_id"] = api_id
+        context.user_data["checker_data"]["api_hash"] = api_hash
 
+        await update.message.reply_text("⏳ جاري الاتصال بتليجرام وإرسال كود التفعيل...")
+        try:
             from telethon import TelegramClient
+            # حذف أي جلسة سابقة لضمان البدء من الصفر
             session_path = os.path.join("checker_sessions", f"setup_{user_id}")
+            for f in [session_path + ".session", session_path + ".session-journal"]:
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+
             client = TelegramClient(session_path, api_id, api_hash)
             await client.connect()
 
             if await client.is_user_authorized():
-                # Already authorized, save directly
+                session_source = os.path.join("checker_sessions", f"setup_{user_id}.session")
+                src = session_source if os.path.exists(session_source) else None
                 await client.disconnect()
-                await checker_manager.add_account(api_id, api_hash, phone)
+                await checker_manager.add_account(api_id, api_hash, phone, session_source_path=src)
                 await update.message.reply_text("✅ تم إضافة الحساب الفاحص بنجاح (المستخدم مسجل مسبقاً)!")
                 context.user_data.pop("checker_step", None)
                 context.user_data.pop("checker_data", None)
-                try:
-                    os.remove(session_path + ".session")
-                except Exception:
-                    pass
+                for f in [session_source, session_source + "-journal"]:
+                    try: os.remove(f)
+                    except Exception: pass
                 return
 
             sent = await client.send_code_request(phone)
@@ -528,8 +538,16 @@ async def handle_checker_text_input(update: Update, context: ContextTypes.DEFAUL
                 f"الرجاء إرسال الكود المستلم:"
             )
         except Exception as e:
-            logger.error(f"Error sending code for checker account: {e}")
-            await update.message.reply_text(f"❌ فشل الاتصال بحساب تليجرام: {e}\n\nالرجاء التأكد من صحة api_id و api_hash.")
+            logger.error(f"Telethon setup error: {e}", exc_info=True)
+            await update.message.reply_text(
+                f"❌ فشل الاتصال بحساب تليجرام: {e}\n\n"
+                "تأكد من:\n"
+                "• صحة api_id و api_hash من my.telegram.org\n"
+                "• صحة رقم الهاتف (مثال: +967777777777)\n"
+                "• اتصال السيرفر بالإنترنت"
+            )
+            context.user_data.pop("checker_step", None)
+            context.user_data.pop("checker_data", None)
 
     elif step == "code":
         code = text.strip()
@@ -538,26 +556,33 @@ async def handle_checker_text_input(update: Update, context: ContextTypes.DEFAUL
         if not client:
             await update.message.reply_text("❌ انتهت الجلسة، الرجاء المحاولة من جديد.")
             context.user_data.pop("checker_step", None)
+            context.user_data.pop("checker_data", None)
             return
         try:
             await client.sign_in(data["phone"], code, phone_code_hash=data["phone_code_hash"])
+            session_source = os.path.join("checker_sessions", f"setup_{user_id}.session")
+            # لا نمرر session_source إذا لم يكن الملف موجوداً
+            src = session_source if os.path.exists(session_source) else None
             await client.disconnect()
-            await checker_manager.add_account(data["api_id"], data["api_hash"], data["phone"])
+            await checker_manager.add_account(data["api_id"], data["api_hash"], data["phone"], session_source_path=src)
             await update.message.reply_text("✅ تم إضافة الحساب الفاحص بنجاح!")
         except Exception as e:
-            await update.message.reply_text(f"❌ فشل تسجيل الدخول: {e}\nالرجاء التأكد من الكود وإعادة المحاولة.")
+            logger.error(f"Telethon sign in error: {e}")
+            await update.message.reply_text(f"❌ فشل تسجيل الدخول: {e}\nالرجاء التأكد من الكود والمحاولة مرة أخرى.")
             try:
                 await client.disconnect()
             except Exception:
                 pass
-            context.user_data.pop("checker_step", None)
         finally:
-            context.user_data.pop("checker_data", None)
             context.user_data.pop("checker_step", None)
-            try:
-                os.remove(os.path.join("checker_sessions", f"setup_{user_id}.session"))
-            except Exception:
-                pass
+            context.user_data.pop("checker_data", None)
+            # حذف الجلسة المؤقتة للإعداد فقط
+            session_path = os.path.join("checker_sessions", f"setup_{user_id}")
+            for f in [session_path + ".session", session_path + ".session-journal"]:
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
