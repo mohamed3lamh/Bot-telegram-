@@ -629,6 +629,8 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 status_text = "🟢 مسجل"
             elif check_result == "banned":
                 status_text = "🔴 محظور"
+            elif check_result == "unregistered":
+                status_text = "🆕 غير مسجل"
             else:
                 status_text = "🟡 غير معروف"
 

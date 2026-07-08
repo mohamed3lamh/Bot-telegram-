@@ -11,6 +11,7 @@ from telethon.errors import (
     FloodWaitError,
     UserDeactivatedError,
     AuthKeyUnregisteredError,
+    PhoneNumberInvalidError,
 )
 import database as db
 
@@ -172,8 +173,8 @@ class CheckerManager:
                 logger.info(f"Result for {phone_number}: registered (SentCodeTypeApp)")
                 return "registered"
             else:
-                logger.info(f"Result for {phone_number}: unknown (succeeded with {sent_code.type.__class__.__name__})")
-                return "unknown"
+                logger.info(f"Result for {phone_number}: unregistered (succeeded with {sent_code.type.__class__.__name__})")
+                return "unregistered"
         except (UserDeactivatedError, AuthKeyUnregisteredError) as deact_err:
             logger.error(f"Credentials for checker #{acc.db_id} are invalid/deactivated: {deact_err}. Disabling...")
             try:
@@ -192,6 +193,9 @@ class CheckerManager:
         except PhonePasswordProtectedError:
             logger.info(f"Result for {phone_number}: registered (password protected)")
             return "registered"
+        except PhoneNumberInvalidError:
+            logger.info(f"Result for {phone_number}: unregistered (invalid phone number)")
+            return "unregistered"
         except PhoneMigrateError as e:
             logger.warning(f"PhoneMigrateError for {phone_number}, new_dc={e.new_dc}, migrating guest DC...")
             try:
@@ -217,6 +221,8 @@ class CheckerManager:
                 return "registered"
             except PhonePasswordProtectedError:
                 return "registered"
+            except PhoneNumberInvalidError:
+                return "unregistered"
             except Exception as e2:
                 logger.warning(f"Retry after PhoneMigrateError failed for {phone_number}: {e2}")
                 return "unknown"
