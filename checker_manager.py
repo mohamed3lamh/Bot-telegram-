@@ -12,7 +12,7 @@ from telethon.errors import (
     UserDeactivatedError,
     AuthKeyUnregisteredError,
     PhoneNumberInvalidError,
-    SmsCodeSendFailedError,
+    SmsCodeCreateFailedError,
     SendCodeUnavailableError,
 )
 import database as db
@@ -195,7 +195,7 @@ class CheckerManager:
         except PhonePasswordProtectedError:
             logger.info(f"Result for {phone_number}: registered (password protected)")
             return "registered"
-        except (PhoneNumberInvalidError, SmsCodeSendFailedError, SendCodeUnavailableError) as sms_err:
+        except (PhoneNumberInvalidError, SmsCodeCreateFailedError, SendCodeUnavailableError) as sms_err:
             logger.info(f"Result for {phone_number}: unregistered ({sms_err.__class__.__name__}: {sms_err})")
             return "unregistered"
         except PhoneMigrateError as e:
@@ -223,7 +223,7 @@ class CheckerManager:
                 return "registered"
             except PhonePasswordProtectedError:
                 return "registered"
-            except (PhoneNumberInvalidError, SmsCodeSendFailedError, SendCodeUnavailableError):
+            except (PhoneNumberInvalidError, SmsCodeCreateFailedError, SendCodeUnavailableError):
                 return "unregistered"
             except Exception as e2:
                 logger.warning(f"Retry after PhoneMigrateError failed for {phone_number}: {e2}")
