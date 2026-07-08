@@ -590,23 +590,66 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 f"Durian API order={api_delay:.4f}s"
             )
 
+            # ══════════════════════════════════════════
+            # [DEBUG-STEP-1] استلام الرقم من DurianRCS
+            # ══════════════════════════════════════════
+            logger.warning(
+                f"[DEBUG][STEP-1][DURIAN_RESPONSE] "
+                f"user={user_id} | account={username} | country={clean_country} | "
+                f"result_status={result.get('status') if result else 'None'} | "
+                f"result_keys={list(result.keys()) if result else 'None'} | "
+                f"raw_result={result}"
+            )
+
             if not result or result.get("status") != "success":
+                logger.warning(
+                    f"[DEBUG][STEP-1][SKIP] user={user_id} | country={clean_country} | "
+                    f"REASON=result not success | status={result.get('status') if result else 'None'}"
+                )
                 return
             phone_number = result.get("number")
             if not phone_number:
+                logger.warning(
+                    f"[DEBUG][STEP-1][SKIP] user={user_id} | country={clean_country} | "
+                    f"REASON=phone_number is empty | result={result}"
+                )
                 return
 
+            logger.warning(
+                f"[DEBUG][STEP-1][GOT_NUMBER] "
+                f"user={user_id} | phone={phone_number} | country={clean_country} | account={username}"
+            )
+
             t_number_start = time.perf_counter()
+
+            # ══════════════════════════════════════════
+            # [DEBUG-STEP-2] قبل استدعاء check_number()
+            # ══════════════════════════════════════════
+            logger.warning(
+                f"[DEBUG][STEP-2][BEFORE_CHECK] "
+                f"phone={phone_number} | calling checker_manager.check_number()"
+            )
 
             # --- الفحص عبر Telethon: مسجل / محظور / غير مسجل ---
             try:
                 check_result = await checker_manager.check_number(phone_number)
             except Exception as e:
-                logger.error(f"Checker error for {phone_number}: {e}")
+                logger.error(
+                    f"[DEBUG][STEP-2][CHECK_EXCEPTION] "
+                    f"phone={phone_number} | exception_type={type(e).__name__} | error={e}"
+                )
                 check_result = "unknown"
 
-            # --- TRACE LOGS START ---
+            # ══════════════════════════════════════════
+            # [DEBUG-STEP-3] بعد check_number()
+            # ══════════════════════════════════════════
             import datetime
+            logger.warning(
+                f"[DEBUG][STEP-3][AFTER_CHECK] "
+                f"phone={phone_number} | check_result='{check_result}' | "
+                f"time={datetime.datetime.now().isoformat()}"
+            )
+
             req_id = result.get("id") or result.get("order") or "N/A"
             logger.info(
                 f"\n==============================\n"
@@ -633,6 +676,15 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 status_text = "🆕 غير مسجل"
             else:
                 status_text = "🟡 غير معروف"
+
+            # ══════════════════════════════════════════
+            # [DEBUG-STEP-4] بعد تحويل الحالة إلى status_text
+            # ══════════════════════════════════════════
+            logger.warning(
+                f"[DEBUG][STEP-4][STATUS_MAPPED] "
+                f"phone={phone_number} | check_result='{check_result}' | "
+                f"status_text='{status_text}' | WILL_SEND_TO_CHANNEL=True"
+            )
 
             # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة) ---
             country_name = clean_country.upper()
@@ -684,6 +736,16 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             t_send_start = time.perf_counter()
+
+            # ══════════════════════════════════════════
+            # [DEBUG-STEP-5] قبل إرسال send_message()
+            # ══════════════════════════════════════════
+            logger.warning(
+                f"[DEBUG][STEP-5][BEFORE_SEND] "
+                f"phone={phone_number} | status='{check_result}' | "
+                f"channel={channel} | user={user_id}"
+            )
+
             # فصل إرسال الرسالة عن باقي المنطق: الرقم اشتُري بالفعل واستُهلك رصيده من DurianRCS،
             # فلو فشل الإرسال فقط (مثلاً البوت أُزيل من صلاحيات القناة) يجب ألا يُبتلع الخطأ بصمت
             # ضمن نفس except العام؛ يجب تسجيله بوضوح كـ"رقم مدفوع فُقد" لتمييزه عن فشل السحب/الفحص.
@@ -696,11 +758,22 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception as send_err:
                 logger.error(
-                    f"⚠️ [رقم مدفوع مفقود] فشل إرسال الرقم {phone_number} (مستخدم {user_id}, حساب {username}) "
-                    f"إلى القناة {channel} رغم استهلاك الرصيد من DurianRCS بالفعل. السبب: {send_err}"
+                    f"[DEBUG][STEP-5][SEND_FAILED] "
+                    f"⚠️ [رقم مدفوع مفقود] phone={phone_number} | status='{check_result}' | "
+                    f"user={user_id} | account={username} | channel={channel} | "
+                    f"error_type={type(send_err).__name__} | error={send_err}"
                 )
                 return
             t_send_end = time.perf_counter()
+
+            # ══════════════════════════════════════════
+            # [DEBUG-STEP-6] بعد نجاح الإرسال
+            # ══════════════════════════════════════════
+            logger.warning(
+                f"[DEBUG][STEP-6][SEND_SUCCESS] "
+                f"phone={phone_number} | status='{check_result}' | "
+                f"channel={channel} | duration={t_send_end - t_send_start:.4f}s"
+            )
             
             logger.info(
                 f"[PERF_TRACE] [Number: {phone_number}] context.bot.send_message duration: "
