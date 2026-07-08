@@ -5,9 +5,8 @@ from telethon import TelegramClient
 from telethon.tl.functions.help import GetConfigRequest
 from telethon.errors import (
     PhoneNumberBannedError,
-    PhoneNumberUnoccupiedError,
     PhoneNumberFloodError,
-    PhoneNumberInvalidError,
+    PhonePasswordProtectedError,
     PhoneMigrateError,
     FloodWaitError,
 )
@@ -132,35 +131,33 @@ class CheckerManager:
         try:
             await acc.client.send_code_request(phone_number)
             acc.total_checked += 1
-            logger.info(f"Result for {phone_number}: registered")
-            return "registered"
+            logger.info(f"Result for {phone_number}: unknown (send_code succeeded but not in registered criteria)")
+            return "unknown"
         except PhoneNumberBannedError:
             acc.total_checked += 1
             logger.info(f"Result for {phone_number}: banned")
             return "banned"
-        except PhoneNumberUnoccupiedError:
-            acc.total_checked += 1
-            logger.info(f"Result for {phone_number}: not_registered (unoccupied)")
-            return "not_registered"
         except PhoneNumberFloodError:
             acc.total_checked += 1
-            logger.warning(f"Result for {phone_number}: unknown (flood on target number)")
-            return "unknown"
-        except PhoneNumberInvalidError:
+            logger.info(f"Result for {phone_number}: registered (flood on target number)")
+            return "registered"
+        except PhonePasswordProtectedError:
             acc.total_checked += 1
-            logger.info(f"Result for {phone_number}: not_registered (invalid number)")
-            return "not_registered"
+            logger.info(f"Result for {phone_number}: registered (password protected)")
+            return "registered"
         except PhoneMigrateError:
             logger.warning(f"PhoneMigrateError for {phone_number}, reconnecting...")
             try:
                 await acc.client.disconnect()
                 await acc.client.connect()
                 await acc.client.send_code_request(phone_number)
-                return "registered"
+                return "unknown"
             except PhoneNumberBannedError:
                 return "banned"
-            except PhoneNumberUnoccupiedError:
-                return "not_registered"
+            except PhoneNumberFloodError:
+                return "registered"
+            except PhonePasswordProtectedError:
+                return "registered"
             except Exception as e2:
                 logger.warning(f"Retry after PhoneMigrateError failed for {phone_number}: {e2}")
                 return "unknown"
@@ -177,13 +174,8 @@ class CheckerManager:
             logger.warning(f"Result for {phone_number}: unknown (timeout: {e})")
             return "unknown"
         except Exception as e:
-            acc.total_checked += 1
-            err_name = type(e).__name__
-            logger.info(f"Result for {phone_number}: not_registered ({err_name})")
-            # إذا كان الخطأ من نوع RPCError مع كود غير معروف، نصنفه كـ unknown
-            if "Flood" in err_name or "Timeout" in err_name:
-                return "unknown"
-            return "not_registered"
+            logger.warning(f"Result for {phone_number}: unknown ({type(e).__name__}: {e})")
+            return "unknown"
 
     def _get_next_account(self):
         active = [a for a in self.accounts.values()
