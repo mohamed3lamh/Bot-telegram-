@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from telethon import TelegramClient
+from telethon.tl.functions.help import GetConfigRequest
 from telethon.errors import (
     PhoneNumberBannedError,
     PhoneNumberUnoccupiedError,
@@ -68,12 +69,34 @@ class CheckerManager:
             acc.client = TelegramClient(session_path, acc.api_id, acc.api_hash)
             await acc.client.connect()
             if not await acc.client.is_user_authorized():
-                logger.warning(f"Checker account #{acc.db_id} session not authorized, skipping")
-                await acc.client.disconnect()
-                acc.client = None
-                return
+                logger.warning(f"Checker #{acc.db_id} not authorized on current DC, scanning DCs 1-5...")
+                try:
+                    config = await acc.client(GetConfigRequest())
+                    dc_options = {opt.id: opt for opt in config.dc_options}
+                except Exception:
+                    dc_options = {}
+                auth_ok = False
+                for dc_id in range(1, 6):
+                    opt = dc_options.get(dc_id)
+                    if not opt:
+                        continue
+                    try:
+                        acc.client.session.set_dc(dc_id, opt.ip_address, opt.port)
+                        await acc.client.disconnect()
+                        await acc.client.connect()
+                        if await acc.client.is_user_authorized():
+                            auth_ok = True
+                            logger.info(f"Checker #{acc.db_id} authorized on DC {dc_id}")
+                            break
+                    except Exception:
+                        continue
+                if not auth_ok:
+                    logger.warning(f"Checker account #{acc.db_id} not authorized on any DC, skipping")
+                    await acc.client.disconnect()
+                    acc.client = None
+                    return
             acc.connected = True
-            logger.info(f"Checker account #{acc.db_id} ({acc.phone}) connected successfully")
+            logger.info(f"Checker account #{acc.db_id} ({acc.phone}) connected successfully on DC {acc.client.session._dc_id}")
         except Exception as e:
             logger.error(f"Failed to start checker account #{acc.db_id}: {e}")
 
@@ -128,8 +151,19 @@ class CheckerManager:
             logger.info(f"Result for {phone_number}: not_registered (invalid number)")
             return "not_registered"
         except PhoneMigrateError as e:
-            logger.warning(f"Result for {phone_number}: unknown (PhoneMigrateError to DC {e.new_dc})")
-            return "unknown"
+            logger.warning(f"PhoneMigrateError for {phone_number}, new_dc={e.new_dc}, reconnecting...")
+            try:
+                await acc.client.disconnect()
+                await acc.client.connect()
+                await acc.client.send_code_request(phone_number)
+                return "registered"
+            except PhoneNumberBannedError:
+                return "banned"
+            except PhoneNumberUnoccupiedError:
+                return "not_registered"
+            except Exception as e2:
+                logger.warning(f"Retry after PhoneMigrateError failed for {phone_number}: {e2}")
+                return "unknown"
         except FloodWaitError as e:
             acc.flood_errors += 1
             logger.warning(f"Checker #{acc.db_id} flood wait {e.seconds}s (error #{acc.flood_errors})")
