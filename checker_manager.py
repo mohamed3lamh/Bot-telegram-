@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.errors import (
     PhoneNumberBannedError,
     PhoneNumberFloodError,
@@ -137,26 +138,36 @@ class CheckerManager:
             logger.warning("No active checker accounts available")
             return "unknown"
 
-        # Ensure client is initialized and connected
-        if not acc.client:
-            await self._start_client(acc)
-            if not acc.client or not acc.connected:
-                logger.warning(f"Checker #{acc.db_id} client could not be started")
-                return "unknown"
-
-        if not acc.client.is_connected():
-            logger.info(f"Checker #{acc.db_id} is disconnected. Reconnecting...")
-            try:
-                await acc.client.connect()
-            except Exception as conn_err:
-                logger.error(f"Failed to reconnect Checker #{acc.db_id}: {conn_err}")
-                return "unknown"
-
-        logger.info(f"Checking {phone_number} via checker account #{acc.db_id}")
+        logger.info(f"Checking {phone_number} via guest client (using credentials of checker #{acc.db_id})")
+        
+        guest_client = TelegramClient(StringSession(), acc.api_id, acc.api_hash)
         try:
-            sent_code = await acc.client.send_code_request(phone_number)
+            # Connect guest client with a strict timeout of 10.0 seconds
+            await asyncio.wait_for(guest_client.connect(), timeout=10.0)
+            
+            # Perform check with retry support for PhoneMigrateError
+            result = await self._check_with_guest(guest_client, phone_number, acc)
             acc.total_checked += 1
-            from telethon.tl.types.auth import SentCodeTypeApp
+            return result
+        except Exception as e:
+            logger.warning(f"Guest check failed for {phone_number}: {e}")
+            return "unknown"
+        finally:
+            try:
+                await asyncio.wait_for(guest_client.disconnect(), timeout=3.0)
+            except Exception:
+                pass
+
+    async def _check_with_guest(self, guest_client, phone_number, acc, retry_count=0) -> str:
+        if retry_count > 3:
+            return "unknown"
+            
+        from telethon.tl.types.auth import SentCodeTypeApp
+        try:
+            sent_code = await asyncio.wait_for(
+                guest_client.send_code_request(phone_number),
+                timeout=12.0
+            )
             if isinstance(sent_code.type, SentCodeTypeApp):
                 logger.info(f"Result for {phone_number}: registered (SentCodeTypeApp)")
                 return "registered"
@@ -164,40 +175,33 @@ class CheckerManager:
                 logger.info(f"Result for {phone_number}: unknown (succeeded with {sent_code.type.__class__.__name__})")
                 return "unknown"
         except (UserDeactivatedError, AuthKeyUnregisteredError) as deact_err:
-            logger.error(f"Checker account #{acc.db_id} is deactivated/revoked ({deact_err}). Disabling in database...")
+            logger.error(f"Credentials for checker #{acc.db_id} are invalid/deactivated: {deact_err}. Disabling...")
             try:
                 db.set_checker_account_active(acc.db_id, False)
-            except Exception as db_err:
-                logger.error(f"Failed to disable checker account in DB: {db_err}")
+            except Exception:
+                pass
             acc.is_active = False
             acc.connected = False
             return "unknown"
         except PhoneNumberBannedError:
-            acc.total_checked += 1
             logger.info(f"Result for {phone_number}: banned")
             return "banned"
         except PhoneNumberFloodError:
-            acc.total_checked += 1
             logger.info(f"Result for {phone_number}: registered (flood on target number)")
             return "registered"
         except PhonePasswordProtectedError:
-            acc.total_checked += 1
             logger.info(f"Result for {phone_number}: registered (password protected)")
             return "registered"
         except PhoneMigrateError as e:
-            logger.warning(f"PhoneMigrateError for {phone_number}, new_dc={e.new_dc}, migrating DC...")
+            logger.warning(f"PhoneMigrateError for {phone_number}, new_dc={e.new_dc}, migrating guest DC...")
             try:
                 addr = DC_ADDRESSES.get(e.new_dc)
                 if addr:
                     ip, port = addr
-                    acc.client.session.set_dc(e.new_dc, ip, port)
-                await acc.client.disconnect()
-                await acc.client.connect()
-                sent_code = await acc.client.send_code_request(phone_number)
-                from telethon.tl.types.auth import SentCodeTypeApp
-                if isinstance(sent_code.type, SentCodeTypeApp):
-                    return "registered"
-                return "unknown"
+                    guest_client.session.set_dc(e.new_dc, ip, port)
+                await asyncio.wait_for(guest_client.disconnect(), timeout=3.0)
+                await asyncio.wait_for(guest_client.connect(), timeout=8.0)
+                return await self._check_with_guest(guest_client, phone_number, acc, retry_count + 1)
             except (UserDeactivatedError, AuthKeyUnregisteredError) as deact_err:
                 logger.error(f"Checker account #{acc.db_id} deactivated during migration retry: {deact_err}")
                 try:
@@ -217,19 +221,19 @@ class CheckerManager:
                 logger.warning(f"Retry after PhoneMigrateError failed for {phone_number}: {e2}")
                 return "unknown"
         except FloodWaitError as e:
+            logger.warning(f"Guest client hit FloodWait: {e.seconds}s")
             acc.flood_errors += 1
-            logger.warning(f"Checker #{acc.db_id} flood wait {e.seconds}s (error #{acc.flood_errors})")
             if acc.flood_errors >= 5:
                 db.set_checker_account_limited(acc.db_id, True)
                 acc.is_limited = True
                 acc.is_active = False
-                logger.warning(f"Checker account #{acc.db_id} marked as limited due to flood")
+                logger.warning(f"Checker account #{acc.db_id} marked as limited due to guest floods")
             return "unknown"
         except (asyncio.TimeoutError, TimeoutError) as e:
-            logger.warning(f"Result for {phone_number}: unknown (timeout: {e})")
+            logger.warning(f"Guest check timed out for {phone_number}")
             return "unknown"
         except Exception as e:
-            logger.warning(f"Result for {phone_number}: unknown ({type(e).__name__}: {e})")
+            logger.warning(f"Guest check got exception for {phone_number}: {type(e).__name__}: {e}")
             return "unknown"
 
     def _get_next_account(self):
