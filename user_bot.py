@@ -8,7 +8,7 @@ from telegram.constants import ParseMode
 import database as db
 from durian_api import DurianAPI
 
-from telegram_checker.checker import telegram_checker 
+
 
 logger = logging.getLogger(__name__)
 
@@ -464,99 +464,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         await query.answer(f"✔️ تمت إضافة {country_name_with_emoji} بنجاح", show_alert=True)
         # لا نغير الصفحة، يبقى المستخدم في نفس قائمة الدول
         return
-    elif data.startswith(("code_", "unban_", "cancel_", "rate_", "weak_")):
-        parts = data.split("_", 2)
-        if len(parts) < 3:
-            await safe_answer(query, "⚠️ هذه الأزرار القديمة غير مدعومة...", show_alert=True)
-            return
-        action = parts[0]
-        username = parts[1]
-        phone = parts[2]
 
-        # استخدام مالك البوت للبحث عن الحساب
-        owner_id = user_id
-        try:
-            def _get_owner_id():
-                with db.get_connection() as conn:
-                    cursor = conn.cursor()
-                    try:
-                        cursor.execute("SELECT user_id FROM user_bots WHERE token = %s", (context.bot.token,))
-                        row = cursor.fetchone()
-                        return row[0] if row else None
-                    finally:
-                        cursor.close()
-            fetched_owner = await asyncio.to_thread(_get_owner_id)
-            if fetched_owner:
-                owner_id = fetched_owner
-        except Exception as e:
-            logger.error(f"Error querying bot owner by token: {e}")
-        accounts = await asyncio.to_thread(db.get_all_site_accounts, owner_id)
-        api_key = None
-        for acc_id, acc_username, acc_api_key, _ in accounts:
-            if acc_username == username:
-                api_key = acc_api_key
-                break
-        if not api_key:
-            await safe_answer(query, "❌ الحساب المرتبط بهذا الرقم غير موجود!", show_alert=True)
-            return
-
-        if action == "code":
-            await safe_answer(query, "⏳ جاري طلب الكود يرجى الانتظار", show_alert=True)
-            try:
-                sms_res = await DurianAPI.get_sms(username, api_key, phone)
-                if sms_res["status"] == "success":
-                    # استخراج سطر الدولة من النص القديم
-                    old_text = query.message.text_html
-                    country_line = ""
-                    for line in old_text.split("\n"):
-                        if "- الـدولـة :" in line:
-                            country_line = line.strip()
-                            break
-                    
-                    # بناء النص الجديد
-                    updated_text = (
-                        f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
-                        f"<b>    - الـرقـــــم : <code>{phone}</code></b>\n"
-                        f"<b>    {country_line}</b>\n"
-                        f"<b>    - الـحـالـة : ✅ تـم الـوصـول</b>\n"
-                        f"<b>    - الــكـــود : {sms_res['sms']}</b>"
-                    )
-                    try:
-                        await query.message.edit_text(text=updated_text, reply_markup=None, parse_mode=ParseMode.HTML)
-                    except Exception:
-                        pass
-                else:
-                    pass
-            except Exception as e:
-                logger.error(f"Error fetching SMS for {phone}: {e}")
-                await query.message.reply_text("❌ فشل جلب الكود، حاول لاحقًا.")
-        elif action == "cancel":
-            try:
-                success = await DurianAPI.cancel_number(username, api_key, phone)
-                if success:
-                    try:
-                        await query.message.delete()
-                    except Exception:
-                        pass
-                    await safe_answer(query, "🗑️ تم إلغاء الرقم بنجاح وحذفه من القناة.", show_alert=True)
-                else:
-                    await safe_answer(query, "❌ فشل إلغاء الرقم، ربما انتهى وقته أو تم تفعيله.", show_alert=True)
-            except Exception as e:
-                logger.error(f"Error cancelling number {phone}: {e}")
-                await safe_answer(query, "❌ خطأ في الإلغاء", show_alert=True)
-
-        elif action == "unban":
-            await safe_answer(query, "⚙️ جاري إرسال طلب فك الحظر...", show_alert=True)
-        elif action == "rate":
-            await safe_answer(query, "📊 نسبة وصول الأكواد الحالية لهذا النطاق هي: 94%", show_alert=True)
-        elif action == "weak":
-            await safe_answer(query, "🧌 تم تصنيف جودة هذا النطاق كـ (ضعيفة) مؤقتاً.", show_alert=True)
-
-async def safe_answer(query, text=None, show_alert=False):
-    try:
-        await query.answer(text=text, show_alert=show_alert)
-    except Exception as e:
-        logger.warning(f"Failed to answer callback query: {e}")
 
 
 # ==================== 6. عرض وإدارة الدول المختارة ====================

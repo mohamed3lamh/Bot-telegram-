@@ -3,11 +3,11 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 import database as db
 from bot_manager import bot_manager
-from telegram_checker.login_manager import login_manager
+
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,8 +17,6 @@ try:
     ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 except Exception:
     ADMIN_ID = 0
-
-PHONE, CODE, PASSWORD = range(3)
 
 async def show_welcome(update: Update, user_name: str):
     text = (
@@ -252,10 +250,6 @@ async def show_admin_panel(update: Update):
             InlineKeyboardButton("⚙️ إعدادات الأسعار", callback_data="adm_settings")
         ],
         [
-            InlineKeyboardButton("⚙️ إضافة حساب فاحص", callback_data="adm_add_checker"),
-            InlineKeyboardButton("👥 إدارة الحسابات الفاحصة", callback_data="adm_manage_checkers")
-        ],
-        [
             InlineKeyboardButton("⬅️ الواجهة الرئيسية", callback_data="main_menu")
         ]
     ]
@@ -423,143 +417,6 @@ async def prompt_edit_setting(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["editing_setting_key"] = key
     await query.message.reply_text(f"📝 أدخل القيمة الجديدة لـ {key}:")
     context.user_data["admin_action"] = "edit_setting"
-# ---------- دوال إدارة الحسابات الفاحصة ----------
-async def show_checker_management(update: Update):
-    accounts = await asyncio.to_thread(db.get_all_checkers)
-    if not accounts:
-        text = "❌ لا توجد حسابات فحص مضافة بعد."
-        keyboard = [[InlineKeyboardButton("🔙 العودة للوحة الإدارة", callback_data="admin_panel")]]
-    else:
-        text = "👥 **قائمة حسابات الفحص:**\n\nاضغط على أي حساب لتبديل حالته بين مفعل ومعطل."
-        keyboard = []
-        for acc_id, phone, is_active in accounts:
-            status_emoji = "🟢" if is_active else "🔴"
-            btn_text = f"{status_emoji} - {phone}"
-            keyboard.append([
-                InlineKeyboardButton(btn_text, callback_data=f"toggle_chk_{acc_id}"),
-                InlineKeyboardButton("🗑️ حذف", callback_data=f"delete_chk_{acc_id}")
-            ])
-        keyboard.append([InlineKeyboardButton("🔙 العودة للوحة الإدارة", callback_data="admin_panel")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-
-async def toggle_checker_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    if ADMIN_ID == 0 or user_id != ADMIN_ID:
-        await query.answer("غير مصرح", show_alert=True)
-        return
-    try:
-        acc_id = int(query.data.replace("toggle_chk_", ""))
-    except ValueError:
-        await query.answer("خطأ في البيانات", show_alert=True)
-        return
-    accounts = await asyncio.to_thread(db.get_all_checkers)
-    acc = next((a for a in accounts if a[0] == acc_id), None)
-    if not acc:
-        await query.message.reply_text("❌ الحساب غير موجود.")
-        return
-    phone = acc[1]
-    old_status = acc[2]
-    await asyncio.to_thread(db.toggle_checker, acc_id)
-    new_status = not old_status
-    status_text = "تفعيل" if new_status else "تعطيل"
-    await query.message.reply_text(f"✅ تم {status_text} الحساب `{phone}` بنجاح.")
-    await show_checker_management(update)
-
-# ---------- بقية الدوال ----------
-async def force_add_checker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await start_add_checker(update, context)
-
-async def start_add_checker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("[TRACE] Conversation started via start_add_checker")
-    query = update.callback_query
-    if query:
-        await query.answer()
-        user_id = query.from_user.id
-    else:
-        user_id = update.effective_user.id
-    if ADMIN_ID == 0 or user_id != ADMIN_ID:
-        logger.info("[TRACE] Unauthorized access attempt")
-        return ConversationHandler.END
-    msg_text = (
-        "🚀 **نظام ربط حساب الفحص التلقائي**\n\n"
-        "أرسل بيانات الحساب الفاحص بالصيغة التالية تماماً:\n"
-        "`الرقم,api_id,api_hash`\n\n"
-        "مثال:\n"
-        "`+967777777777,28412234,b3a6c98ea...`"
-    )
-    if query:
-        await query.message.reply_text(msg_text, parse_mode="Markdown")
-    else:
-        await update.message.reply_text(msg_text, parse_mode="Markdown")
-    logger.info("[TRACE] State returned: PHONE")
-    return PHONE
-
-async def get_phone_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    logger.info(f"[TRACE] Checker state received message (PHONE state): {text}")
-    try:
-        phone, api_id, api_hash = text.split(",")
-        context.user_data["chk_phone"] = phone.strip()
-        context.user_data["chk_api_id"] = api_id.strip()
-        context.user_data["chk_api_hash"] = api_hash.strip()
-        await update.message.reply_text("⏳ جاري الاتصال بخوادم التليجرام وإرسال كود التحقق...")
-        await login_manager.send_code(
-            context.user_data["chk_phone"],
-            context.user_data["chk_api_id"],
-            context.user_data["chk_api_hash"]
-        )
-        await update.message.reply_text("💬 وصلك كود الآن على حساب التليجرام الفاحص، يرجى إرساله هنا فوراً:")
-        logger.info("[TRACE] State returned: CODE")
-        return CODE
-    except Exception as e:
-        await update.message.reply_text(f"❌ فشل الاتصال بالحساب أو أن الصيغة غير صحيحة.\nالخطأ: `{str(e)}`")
-        return PHONE
-
-async def get_code_and_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    code = update.message.text.strip()
-    logger.info(f"[TRACE] Checker state received message (CODE state): {code}")
-    phone = context.user_data["chk_phone"]
-    await update.message.reply_text("⏳ جاري التحقق من كود تسجيل الدخول...")
-    try:
-        result = await login_manager.verify_code(phone, code)
-        if result.get("status") == "CODE_EXPIRED":
-            await update.message.reply_text("⏳ انتهت صلاحية الكود. تم إرسال كود جديد إلى رقمك. أرسل الكود الجديد:")
-            return CODE  # يجب أن يعود إلى نفس الحالة لاستقبال الكود الجديد
-        if result.get("status") == "PASSWORD_REQUIRED":
-            await update.message.reply_text("🔒 هذا الحساب محمي بالتحقق بخطوتين، من فضلك أرسل باسوورد الحساب الآن:")
-            return PASSWORD
-        if result.get("status") == "SUCCESS":
-            await update.message.reply_text(f"✅ تم ربط الحساب الفاحص بنجاح!\n👤 الاسم: {result.get('name')}")
-            await login_manager.cleanup()
-            return ConversationHandler.END
-    except Exception as e:
-        await update.message.reply_text(f"❌ خطأ برميجي أثناء تفعيل الكود: `{str(e)}`")
-        await login_manager.cleanup()
-        return ConversationHandler.END
-        
-async def get_password_and_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    password = update.message.text.strip()
-    logger.info(f"[TRACE] Checker state received message (PASSWORD state)")
-    phone = context.user_data["chk_phone"]
-    await update.message.reply_text("⏳ جاري فك التحقق بخطوتين وتخزين الجلسة...")
-    try:
-        result = await login_manager.verify_password(phone, password)
-        if result.get("status") == "SUCCESS":
-            await update.message.reply_text(f"✅ تم تخطّي كلمة المرور بنجاح وحفظ الحساب الفاحص!\n👤 الاسم: {result.get('name')}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ كلمة المرور خاطئة أو انتهت مهلة الجلسة: `{str(e)}`")
-    finally:
-        await login_manager.cleanup()
-    logger.info("[TRACE] Conversation ended (PASSWORD SUCCESS/FAIL)")
-    return ConversationHandler.END
-
-async def cancel_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await login_manager.cleanup()
-    await update.message.reply_text("❌ تم إلغاء عملية ربط الحساب الفاحص بنجاح.")
-    return ConversationHandler.END
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -571,18 +428,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID != 0 and user_id == ADMIN_ID:
         if query.data == "admin_panel":
             await show_admin_panel(update)
-            return
-        elif query.data == "adm_manage_checkers":
-            await show_checker_management(update)
-            return
-        elif query.data.startswith("delete_chk_"):
-            acc_id = int(query.data.replace("delete_chk_", ""))
-            await asyncio.to_thread(db.delete_checker, acc_id)
-            await query.answer("🗑️ تم حذف الحساب الفاحص", show_alert=False)
-            await show_checker_management(update)
-            return
-        elif query.data.startswith("toggle_chk_"):
-            await toggle_checker_callback(update, context)
             return
         elif query.data == "adm_add_days":
             context.user_data["admin_action"] = "add_days"
@@ -878,23 +723,6 @@ async def main():
         .concurrent_updates(True)   # معالجة طلبات متعددة بشكل متوازٍ
         .build()
     )
-
-    checker_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("add_checker", force_add_checker),
-            CallbackQueryHandler(start_add_checker, pattern="^adm_add_checker$")
-        ],
-        states={
-            PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone_and_send)],
-            CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_code_and_verify)],
-            PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_password_and_verify)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel_process)],
-        per_message=False
-    )
-
-    logger.info("[TRACE] Registering checker_conv")
-    main_app.add_handler(checker_conv)
 
     main_app.add_handler(CommandHandler("start", start))
     main_app.add_handler(CommandHandler("admin", admin_command))
