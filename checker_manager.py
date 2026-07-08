@@ -14,6 +14,7 @@ from telethon.errors import (
     PhoneNumberInvalidError,
     SmsCodeCreateFailedError,
     SendCodeUnavailableError,
+    ForbiddenError,
 )
 import database as db
 
@@ -198,6 +199,12 @@ class CheckerManager:
         except (PhoneNumberInvalidError, SmsCodeCreateFailedError, SendCodeUnavailableError) as sms_err:
             logger.info(f"Result for {phone_number}: unregistered ({sms_err.__class__.__name__}: {sms_err})")
             return "unregistered"
+        except ForbiddenError as e:
+            if "RECAPTCHA" in str(e) or "signup" in str(e):
+                logger.info(f"Result for {phone_number}: unregistered (RECAPTCHA/signup required)")
+                return "unregistered"
+            logger.warning(f"ForbiddenError for {phone_number}: {e}")
+            return "unknown"
         except PhoneMigrateError as e:
             logger.warning(f"PhoneMigrateError for {phone_number}, new_dc={e.new_dc}, migrating guest DC...")
             try:
@@ -225,6 +232,10 @@ class CheckerManager:
                 return "registered"
             except (PhoneNumberInvalidError, SmsCodeCreateFailedError, SendCodeUnavailableError):
                 return "unregistered"
+            except ForbiddenError as e2:
+                if "RECAPTCHA" in str(e2) or "signup" in str(e2):
+                    return "unregistered"
+                return "unknown"
             except Exception as e2:
                 logger.warning(f"Retry after PhoneMigrateError failed for {phone_number}: {e2}")
                 return "unknown"
