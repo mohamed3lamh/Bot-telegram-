@@ -151,8 +151,12 @@ class CheckerManager:
             logger.info(f"Result for {phone_number}: not_registered (invalid number)")
             return "not_registered"
         except PhoneMigrateError as e:
-            logger.warning(f"PhoneMigrateError for {phone_number}, new_dc={e.new_dc}, reconnecting...")
+            logger.warning(f"PhoneMigrateError for {phone_number}, new_dc={e.new_dc}, migrating DC...")
             try:
+                config = await acc.client(GetConfigRequest())
+                dc_opt = next((opt for opt in config.dc_options if opt.id == e.new_dc), None)
+                if dc_opt:
+                    acc.client.session.set_dc(dc_opt.id, dc_opt.ip_address, dc_opt.port)
                 await acc.client.disconnect()
                 await acc.client.connect()
                 await acc.client.send_code_request(phone_number)
@@ -162,7 +166,7 @@ class CheckerManager:
             except PhoneNumberUnoccupiedError:
                 return "not_registered"
             except Exception as e2:
-                logger.warning(f"Retry after PhoneMigrateError failed for {phone_number}: {e2}")
+                logger.warning(f"Retry after DC migration failed for {phone_number}: {e2}")
                 return "unknown"
         except FloodWaitError as e:
             acc.flood_errors += 1
