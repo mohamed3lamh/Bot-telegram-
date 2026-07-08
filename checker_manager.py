@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 from telethon import TelegramClient
-from telethon.tl.functions.help import GetConfigRequest
 from telethon.errors import (
     PhoneNumberBannedError,
     PhoneNumberFloodError,
@@ -15,6 +14,15 @@ import database as db
 logger = logging.getLogger(__name__)
 
 SESSION_DIR = "checker_sessions"
+
+# عناوين DCs الثابتة — لا تعتمد على GetConfigRequest لأنها ترجع عناوين خطأ أحياناً
+DC_ADDRESSES = {
+    1: ("149.154.175.10", 443),
+    2: ("149.154.167.51", 443),
+    3: ("149.154.175.100", 443),
+    4: ("149.154.167.92", 443),
+    5: ("149.154.175.50", 443),
+}
 
 class CheckerAccountClient:
     def __init__(self, db_id, api_id, api_hash, phone, is_active, is_limited):
@@ -69,18 +77,14 @@ class CheckerManager:
             await acc.client.connect()
             if not await acc.client.is_user_authorized():
                 logger.warning(f"Checker #{acc.db_id} not authorized on current DC, scanning DCs 1-5...")
-                try:
-                    config = await acc.client(GetConfigRequest())
-                    dc_options = {opt.id: opt for opt in config.dc_options}
-                except Exception:
-                    dc_options = {}
                 auth_ok = False
                 for dc_id in range(1, 6):
-                    opt = dc_options.get(dc_id)
-                    if not opt:
+                    addr = DC_ADDRESSES.get(dc_id)
+                    if not addr:
                         continue
+                    ip, port = addr
                     try:
-                        acc.client.session.set_dc(dc_id, opt.ip_address, opt.port)
+                        acc.client.session.set_dc(dc_id, ip, port)
                         await acc.client.disconnect()
                         await acc.client.connect()
                         if await acc.client.is_user_authorized():
@@ -145,9 +149,13 @@ class CheckerManager:
             acc.total_checked += 1
             logger.info(f"Result for {phone_number}: registered (password protected)")
             return "registered"
-        except PhoneMigrateError:
-            logger.warning(f"PhoneMigrateError for {phone_number}, reconnecting...")
+        except PhoneMigrateError as e:
+            logger.warning(f"PhoneMigrateError for {phone_number}, new_dc={e.new_dc}, migrating DC...")
             try:
+                addr = DC_ADDRESSES.get(e.new_dc)
+                if addr:
+                    ip, port = addr
+                    acc.client.session.set_dc(e.new_dc, ip, port)
                 await acc.client.disconnect()
                 await acc.client.connect()
                 await acc.client.send_code_request(phone_number)
