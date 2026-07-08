@@ -136,7 +136,15 @@ def _warm_up_pool():
     conns = []
     for i in range(_POOL_SIZE):
         try:
-            conns.append(_make_conn())
+            if _open_connections_sem.acquire(blocking=False):
+                try:
+                    conns.append(_make_conn())
+                except Exception as e:
+                    _open_connections_sem.release()
+                    logger.warning(f"⚠️ تعذر فتح اتصال {i+1}: {e}")
+                    break
+            else:
+                break
         except Exception as e:
             logger.warning(f"⚠️ تعذر فتح اتصال {i+1}: {e}")
             break

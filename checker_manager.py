@@ -42,6 +42,10 @@ class CheckerManager:
         self.accounts: dict[int, CheckerAccountClient] = {}
         self._counter = 0
         os.makedirs(SESSION_DIR, exist_ok=True)
+        try:
+            self.load_from_db()
+        except Exception as e:
+            logger.warning(f"Failed to load checker accounts on init: {e}")
 
     def load_from_db(self):
         rows = db.get_all_checker_accounts()
@@ -133,10 +137,15 @@ class CheckerManager:
 
         logger.info(f"Checking {phone_number} via checker account #{acc.db_id}")
         try:
-            await acc.client.send_code_request(phone_number)
+            sent_code = await acc.client.send_code_request(phone_number)
             acc.total_checked += 1
-            logger.info(f"Result for {phone_number}: unknown (send_code succeeded but not in registered criteria)")
-            return "unknown"
+            from telethon.tl.types.auth import SentCodeTypeApp
+            if isinstance(sent_code.type, SentCodeTypeApp):
+                logger.info(f"Result for {phone_number}: registered (SentCodeTypeApp)")
+                return "registered"
+            else:
+                logger.info(f"Result for {phone_number}: unknown (succeeded with {sent_code.type.__class__.__name__})")
+                return "unknown"
         except PhoneNumberBannedError:
             acc.total_checked += 1
             logger.info(f"Result for {phone_number}: banned")
@@ -158,7 +167,10 @@ class CheckerManager:
                     acc.client.session.set_dc(e.new_dc, ip, port)
                 await acc.client.disconnect()
                 await acc.client.connect()
-                await acc.client.send_code_request(phone_number)
+                sent_code = await acc.client.send_code_request(phone_number)
+                from telethon.tl.types.auth import SentCodeTypeApp
+                if isinstance(sent_code.type, SentCodeTypeApp):
+                    return "registered"
                 return "unknown"
             except PhoneNumberBannedError:
                 return "banned"
