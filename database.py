@@ -344,6 +344,20 @@ def init_db():
                 )
             """)
             conn.commit()
+
+            # إنشاء جدول الحسابات الفاحصة (Telethon)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS checker_accounts (
+                    id SERIAL PRIMARY KEY,
+                    api_id BIGINT NOT NULL,
+                    api_hash TEXT NOT NULL,
+                    phone_number TEXT NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    is_limited BOOLEAN DEFAULT FALSE,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
         finally:
             cursor.close()
 
@@ -624,6 +638,32 @@ def set_setting(key, value):
 
 def get_all_settings():
     return db_execute("SELECT key, value FROM settings ORDER BY key", commit=False, fetch='all')
+
+# ---------- Checker Accounts (Telethon) ----------
+def add_checker_account(api_id, api_hash, phone_number):
+    db_execute('''
+        INSERT INTO checker_accounts (api_id, api_hash, phone_number)
+        VALUES (%s, %s, %s)
+    ''', (api_id, api_hash, phone_number))
+
+def get_all_checker_accounts():
+    rows = db_execute(
+        'SELECT id, api_id, api_hash, phone_number, is_active, is_limited FROM checker_accounts ORDER BY id',
+        commit=False, fetch='all'
+    )
+    return rows or []
+
+def toggle_checker_account(account_id):
+    db_execute('UPDATE checker_accounts SET is_active = NOT is_active WHERE id = %s', (account_id,))
+
+def delete_checker_account(account_id):
+    db_execute('DELETE FROM checker_accounts WHERE id = %s', (account_id,))
+
+def set_checker_account_limited(account_id, limited=True):
+    db_execute(
+        'UPDATE checker_accounts SET is_limited = %s WHERE id = %s',
+        (1 if limited else 0, account_id)
+    )
 
 def update_country_settings(user_id, country_code, number_type=None, session_status=None):
     if number_type is not None:

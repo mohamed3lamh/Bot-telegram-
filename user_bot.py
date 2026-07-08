@@ -7,6 +7,7 @@ from telegram.request import HTTPXRequest
 from telegram.constants import ParseMode
 import database as db
 from durian_api import DurianAPI
+from checker_manager import checker_manager
 
 
 
@@ -595,6 +596,15 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
             if not phone_number:
                 return
 
+            t_number_start = time.perf_counter()
+
+            # --- الفحص عبر Telethon: مسجل / محظور / غير مسجل ---
+            try:
+                check_result = await checker_manager.check_number(phone_number)
+            except Exception as e:
+                logger.error(f"Checker error for {phone_number}: {e}")
+                check_result = "unknown"
+
             # --- TRACE LOGS START ---
             import datetime
             req_id = result.get("id") or result.get("order") or "N/A"
@@ -612,14 +622,16 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 f"Number entered user_bot.py\n"
                 f"\n"
                 f"[STEP 3]\n"
-                f"Sending number to TelegramChecker"
+                f"Telethon check: {check_result}"
             )
 
-            t_number_start = time.perf_counter()
+            if check_result == "registered":
+                status_text = "🟢 مسجل"
+            elif check_result == "banned":
+                status_text = "🔴 محظور"
+            else:
+                status_text = "⚪️ غير مسجل"
 
-            # --- تم تعطيل الفحص: جميع الأرقام تُنشر كـ "غير معروف" ---
-            status_text = "⚪️ غير معروف / معلق"
-                
             # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة) ---
             country_name = clean_country.upper()
             country_flag = "🌐"

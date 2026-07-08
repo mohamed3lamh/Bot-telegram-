@@ -7,6 +7,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram.request import HTTPXRequest
 import database as db
 from bot_manager import bot_manager
+from checker_manager import checker_manager
 
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -76,6 +77,11 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             await update.message.reply_text(f"❌ خطأ في قاعدة البيانات: {e}")
+        return
+
+    # --- إضافة حساب فاحص (مشروع محادثة منفصل) ---
+    if ADMIN_ID != 0 and user_id == ADMIN_ID and context.user_data.get("checker_step"):
+        await handle_checker_text_input(update, context)
         return
 
     if ADMIN_ID != 0 and user_id == ADMIN_ID and context.user_data.get("admin_action") == "ticket_reply":
@@ -250,6 +256,9 @@ async def show_admin_panel(update: Update):
             InlineKeyboardButton("⚙️ إعدادات الأسعار", callback_data="adm_settings")
         ],
         [
+            InlineKeyboardButton("🕵️ إدارة الحسابات الفاحصة", callback_data="adm_checker_accounts")
+        ],
+        [
             InlineKeyboardButton("⬅️ الواجهة الرئيسية", callback_data="main_menu")
         ]
     ]
@@ -418,6 +427,138 @@ async def prompt_edit_setting(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.message.reply_text(f"📝 أدخل القيمة الجديدة لـ {key}:")
     context.user_data["admin_action"] = "edit_setting"
 
+# ---------- إدارة الحسابات الفاحصة (Telethon) ----------
+async def show_checker_accounts(update: Update):
+    query = update.callback_query
+    accounts = await asyncio.to_thread(db.get_all_checker_accounts)
+    if not accounts:
+        text = "🕵️ **لا توجد حسابات فاحصة حالياً**\n\nأضف حساباً جديداً للبدء بفحص الأرقام عبر Telethon."
+        keyboard = [
+            [InlineKeyboardButton("➕ إضافة حساب فاحص", callback_data="adm_add_checker")],
+            [InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="admin_panel")]
+        ]
+    else:
+        text = "🕵️ **الحسابات الفاحصة**\n\n"
+        keyboard = []
+        for acc in accounts:
+            acc_id, _, _, phone, _active, _limited = acc
+            status = checker_manager.get_status_text(acc_id)
+            checked = checker_manager.get_total_checked(acc_id)
+            masked_phone = phone[:4] + "****" + phone[-2:] if len(phone) > 6 else phone
+            text += f"{acc_id}. {status} `{masked_phone}` - {checked} فحص\n"
+            keyboard.append([
+                InlineKeyboardButton(f"{'🔘 تعطيل' if _active else '🔘 تفعيل'} #{acc_id}", callback_data=f"adm_toggle_checker_{acc_id}"),
+                InlineKeyboardButton(f"🗑️ حذف #{acc_id}", callback_data=f"adm_delete_checker_{acc_id}")
+            ])
+        keyboard.append([InlineKeyboardButton("➕ إضافة حساب فاحص", callback_data="adm_add_checker")])
+        keyboard.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="admin_panel")])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+def mask_phone(phone: str) -> str:
+    if len(phone) > 6:
+        return phone[:4] + "****" + phone[-2:]
+    return phone
+
+async def handle_add_checker_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    context.user_data["checker_step"] = "api_id"
+    context.user_data["checker_data"] = {}
+    await query.message.reply_text(
+        "📝 **إضافة حساب فاحص جديد**\n\n"
+        "الرجاء إرسال `api_id` من my.telegram.org:\n"
+        "(مثال: `1234567`)"
+    )
+
+async def handle_checker_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        return
+    step = context.user_data.get("checker_step")
+    if not step:
+        return
+
+    text = update.message.text.strip()
+
+    if step == "api_id":
+        if not text.isdigit():
+            await update.message.reply_text("❌ api_id يجب أن يكون أرقاماً فقط. أرسل api_id الصحيح:")
+            return
+        context.user_data["checker_data"]["api_id"] = int(text)
+        context.user_data["checker_step"] = "api_hash"
+        await update.message.reply_text("✅ تم استلام api_id\n\nالآن أرسل `api_hash` من my.telegram.org:")
+
+    elif step == "api_hash":
+        context.user_data["checker_data"]["api_hash"] = text
+        context.user_data["checker_step"] = "phone"
+        await update.message.reply_text("✅ تم استلام api_hash\n\nالآن أرسل رقم الهاتف (مثال: `+201234567890`):")
+
+    elif step == "phone":
+        phone = text
+        context.user_data["checker_data"]["phone"] = phone
+        # Start Telethon connection and send code
+        try:
+            api_id = context.user_data["checker_data"]["api_id"]
+            api_hash = context.user_data["checker_data"]["api_hash"]
+
+            from telethon import TelegramClient
+            session_path = os.path.join("checker_sessions", f"setup_{user_id}")
+            client = TelegramClient(session_path, api_id, api_hash)
+            await client.connect()
+
+            if await client.is_user_authorized():
+                # Already authorized, save directly
+                await client.disconnect()
+                await checker_manager.add_account(api_id, api_hash, phone)
+                await update.message.reply_text("✅ تم إضافة الحساب الفاحص بنجاح (المستخدم مسجل مسبقاً)!")
+                context.user_data.pop("checker_step", None)
+                context.user_data.pop("checker_data", None)
+                try:
+                    os.remove(session_path + ".session")
+                except Exception:
+                    pass
+                return
+
+            sent = await client.send_code_request(phone)
+            context.user_data["checker_data"]["phone_code_hash"] = sent.phone_code_hash
+            context.user_data["checker_data"]["_client"] = client
+            context.user_data["checker_step"] = "code"
+            masked = mask_phone(phone)
+            await update.message.reply_text(
+                f"✅ تم إرسال كود التفعيل إلى {masked}\n\n"
+                f"الرجاء إرسال الكود المستلم:"
+            )
+        except Exception as e:
+            logger.error(f"Error sending code for checker account: {e}")
+            await update.message.reply_text(f"❌ فشل الاتصال بحساب تليجرام: {e}\n\nالرجاء التأكد من صحة api_id و api_hash.")
+
+    elif step == "code":
+        code = text.strip()
+        data = context.user_data["checker_data"]
+        client = data.get("_client")
+        if not client:
+            await update.message.reply_text("❌ انتهت الجلسة، الرجاء المحاولة من جديد.")
+            context.user_data.pop("checker_step", None)
+            return
+        try:
+            await client.sign_in(data["phone"], code, phone_code_hash=data["phone_code_hash"])
+            await client.disconnect()
+            await checker_manager.add_account(data["api_id"], data["api_hash"], data["phone"])
+            await update.message.reply_text("✅ تم إضافة الحساب الفاحص بنجاح!")
+        except Exception as e:
+            await update.message.reply_text(f"❌ فشل تسجيل الدخول: {e}\nالرجاء التأكد من الكود وإعادة المحاولة.")
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            context.user_data.pop("checker_step", None)
+        finally:
+            context.user_data.pop("checker_data", None)
+            context.user_data.pop("checker_step", None)
+            try:
+                os.remove(os.path.join("checker_sessions", f"setup_{user_id}.session"))
+            except Exception:
+                pass
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -491,6 +632,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data.startswith("edit_setting_"):
             key = query.data[len("edit_setting_"):]
             await prompt_edit_setting(update, context, key)
+            return
+        # --- إدارة الحسابات الفاحصة ---
+        elif query.data == "adm_checker_accounts":
+            await show_checker_accounts(update)
+            return
+        elif query.data == "adm_add_checker":
+            await handle_add_checker_start(update, context)
+            return
+        elif query.data.startswith("adm_toggle_checker_"):
+            acc_id = int(query.data.split("_")[-1])
+            await checker_manager.toggle_account(acc_id)
+            await show_checker_accounts(update)
+            return
+        elif query.data.startswith("adm_delete_checker_"):
+            acc_id = int(query.data.split("_")[-1])
+            await checker_manager.remove_account(acc_id)
+            await query.answer("🗑️ تم حذف الحساب", show_alert=True)
+            await show_checker_accounts(update)
             return
         # زر تأكيد الدفع (للأدمن فقط)
         elif query.data.startswith("confirm_pay_"):
@@ -740,6 +899,16 @@ async def main():
     await main_app.start()
 
     asyncio.create_task(safe_restore())
+
+    # تشغيل الحسابات الفاحصة (Telethon)
+    async def init_checker():
+        try:
+            checker_manager.load_from_db()
+            await checker_manager.start_all()
+            logger.info(f"Checker manager initialized with {len(checker_manager.accounts)} accounts")
+        except Exception as e:
+            logger.error(f"Checker manager init error: {e}")
+    asyncio.create_task(init_checker())
 
     try:
         while True:
