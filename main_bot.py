@@ -504,6 +504,7 @@ async def handle_checker_text_input(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text("⏳ جاري الاتصال بتليجرام وإرسال كود التفعيل...")
         try:
             from telethon import TelegramClient
+            from telethon.errors import PhoneMigrateError
             # حذف أي جلسة سابقة لضمان البدء من الصفر
             session_path = os.path.join("checker_sessions", f"setup_{user_id}")
             for f in [session_path + ".session", session_path + ".session-journal"]:
@@ -528,7 +529,14 @@ async def handle_checker_text_input(update: Update, context: ContextTypes.DEFAUL
                     except Exception: pass
                 return
 
-            sent = await client.send_code_request(phone)
+            try:
+                sent = await client.send_code_request(phone)
+            except PhoneMigrateError:
+                # التبديل إلى DC الصحيح وإعادة المحاولة
+                await client.disconnect()
+                await client.connect()
+                sent = await client.send_code_request(phone)
+
             context.user_data["checker_data"]["phone_code_hash"] = sent.phone_code_hash
             context.user_data["checker_data"]["_client"] = client
             context.user_data["checker_step"] = "code"
