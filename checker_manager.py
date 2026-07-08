@@ -8,6 +8,8 @@ from telethon.errors import (
     PhonePasswordProtectedError,
     PhoneMigrateError,
     FloodWaitError,
+    UserDeactivatedError,
+    AuthKeyUnregisteredError,
 )
 import database as db
 
@@ -135,6 +137,21 @@ class CheckerManager:
             logger.warning("No active checker accounts available")
             return "unknown"
 
+        # Ensure client is initialized and connected
+        if not acc.client:
+            await self._start_client(acc)
+            if not acc.client or not acc.connected:
+                logger.warning(f"Checker #{acc.db_id} client could not be started")
+                return "unknown"
+
+        if not acc.client.is_connected():
+            logger.info(f"Checker #{acc.db_id} is disconnected. Reconnecting...")
+            try:
+                await acc.client.connect()
+            except Exception as conn_err:
+                logger.error(f"Failed to reconnect Checker #{acc.db_id}: {conn_err}")
+                return "unknown"
+
         logger.info(f"Checking {phone_number} via checker account #{acc.db_id}")
         try:
             sent_code = await acc.client.send_code_request(phone_number)
@@ -146,6 +163,15 @@ class CheckerManager:
             else:
                 logger.info(f"Result for {phone_number}: unknown (succeeded with {sent_code.type.__class__.__name__})")
                 return "unknown"
+        except (UserDeactivatedError, AuthKeyUnregisteredError) as deact_err:
+            logger.error(f"Checker account #{acc.db_id} is deactivated/revoked ({deact_err}). Disabling in database...")
+            try:
+                db.set_checker_account_active(acc.db_id, False)
+            except Exception as db_err:
+                logger.error(f"Failed to disable checker account in DB: {db_err}")
+            acc.is_active = False
+            acc.connected = False
+            return "unknown"
         except PhoneNumberBannedError:
             acc.total_checked += 1
             logger.info(f"Result for {phone_number}: banned")
@@ -171,6 +197,15 @@ class CheckerManager:
                 from telethon.tl.types.auth import SentCodeTypeApp
                 if isinstance(sent_code.type, SentCodeTypeApp):
                     return "registered"
+                return "unknown"
+            except (UserDeactivatedError, AuthKeyUnregisteredError) as deact_err:
+                logger.error(f"Checker account #{acc.db_id} deactivated during migration retry: {deact_err}")
+                try:
+                    db.set_checker_account_active(acc.db_id, False)
+                except Exception:
+                    pass
+                acc.is_active = False
+                acc.connected = False
                 return "unknown"
             except PhoneNumberBannedError:
                 return "banned"

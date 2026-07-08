@@ -673,6 +673,12 @@ def set_checker_account_limited(account_id, limited=True):
         (1 if limited else 0, account_id)
     )
 
+def set_checker_account_active(account_id, active=True):
+    db_execute(
+        'UPDATE checker_accounts SET is_active = %s WHERE id = %s',
+        (active, account_id)
+    )
+
 def update_country_settings(user_id, country_code, number_type=None, session_status=None):
     if number_type is not None:
         db_execute("UPDATE user_countries SET number_type = %s WHERE user_id = %s AND country_name = %s", (number_type, user_id, country_code))
