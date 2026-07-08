@@ -4,6 +4,9 @@ import os
 from telethon import TelegramClient
 from telethon.errors import (
     PhoneNumberBannedError,
+    PhoneNumberUnoccupiedError,
+    PhoneNumberFloodError,
+    PhoneNumberInvalidError,
     FloodWaitError,
 )
 import database as db
@@ -111,6 +114,18 @@ class CheckerManager:
             acc.total_checked += 1
             logger.info(f"Result for {phone_number}: banned")
             return "banned"
+        except PhoneNumberUnoccupiedError:
+            acc.total_checked += 1
+            logger.info(f"Result for {phone_number}: not_registered (unoccupied)")
+            return "not_registered"
+        except PhoneNumberFloodError:
+            acc.total_checked += 1
+            logger.warning(f"Result for {phone_number}: unknown (flood on target number)")
+            return "unknown"
+        except PhoneNumberInvalidError:
+            acc.total_checked += 1
+            logger.info(f"Result for {phone_number}: not_registered (invalid number)")
+            return "not_registered"
         except FloodWaitError as e:
             acc.flood_errors += 1
             logger.warning(f"Checker #{acc.db_id} flood wait {e.seconds}s (error #{acc.flood_errors})")
@@ -120,9 +135,16 @@ class CheckerManager:
                 acc.is_active = False
                 logger.warning(f"Checker account #{acc.db_id} marked as limited due to flood")
             return "unknown"
+        except (asyncio.TimeoutError, TimeoutError) as e:
+            logger.warning(f"Result for {phone_number}: unknown (timeout: {e})")
+            return "unknown"
         except Exception as e:
             acc.total_checked += 1
-            logger.info(f"Result for {phone_number}: not_registered ({type(e).__name__})")
+            err_name = type(e).__name__
+            logger.info(f"Result for {phone_number}: not_registered ({err_name})")
+            # إذا كان الخطأ من نوع RPCError مع كود غير معروف، نصنفه كـ unknown
+            if "Flood" in err_name or "Timeout" in err_name:
+                return "unknown"
             return "not_registered"
 
     def _get_next_account(self):
