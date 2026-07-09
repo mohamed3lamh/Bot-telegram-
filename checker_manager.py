@@ -15,8 +15,6 @@ from telethon.errors import (
     SmsCodeCreateFailedError,
     SendCodeUnavailableError,
     ForbiddenError,
-    PhoneCodeInvalidError,
-    SessionPasswordNeededError,
 )
 import database as db
 
@@ -164,59 +162,52 @@ class CheckerManager:
             except Exception:
                 pass
 
+    async def _resolve_phone(self, acc, phone_number: str) -> str:
+        """
+        الطريقة الوحيدة الموثوقة للتمييز بين مسجل وغير مسجل في 2024+:
+        استخدام contacts.ResolvePhone من حساب checker مسجل.
+        - مسجل   → يُرجع users غير فارغة
+        - غير مسجل → يُرجع PHONE_NOT_OCCUPIED
+        لا تتأثر بـ anti-enumeration حيث تعمل من حساب مصرح.
+        """
+        from telethon.tl.functions.contacts import ResolvePhoneRequest
+        if not acc.client or not acc.connected:
+            logger.warning(f"[RESOLVE] acc #{acc.db_id} not connected → defaulting to registered")
+            return "registered"
+        try:
+            result = await asyncio.wait_for(
+                acc.client(ResolvePhoneRequest(phone=phone_number)),
+                timeout=10.0
+            )
+            if result.users:
+                logger.info(f"Result for {phone_number}: registered (ResolvePhone → {len(result.users)} user)")
+                return "registered"
+            else:
+                logger.info(f"Result for {phone_number}: unregistered (ResolvePhone → empty)")
+                return "unregistered"
+        except Exception as e:
+            err_str = str(e).upper()
+            if any(kw in err_str for kw in [
+                "PHONE_NOT_OCCUPIED", "NOT_OCCUPIED",
+                "UNOCCUPIED", "NOT_FOUND", "NOT FOUND"
+            ]):
+                logger.info(f"Result for {phone_number}: unregistered (ResolvePhone: {type(e).__name__}: {e})")
+                return "unregistered"
+            logger.warning(f"[RESOLVE] {phone_number}: {type(e).__name__}: {e} → defaulting to registered")
+            return "registered"
+
     async def _check_with_guest(self, guest_client, phone_number, acc, retry_count=0) -> str:
         if retry_count > 3:
             return "unknown"
 
         try:
-            sent_code = await asyncio.wait_for(
+            # الخطوة 1: guest client يكشف الحظر (PhoneNumberBannedError)
+            await asyncio.wait_for(
                 guest_client.send_code_request(phone_number),
                 timeout=12.0
             )
-
-            # ═══════════════════════════════════════════════════════════════
-            # FIX: Telegram API (2024+) يُرجع SentCodeTypeApp لجميع الأرقام
-            # (مسجلة وغير مسجلة) لمنع phone enumeration attacks.
-            # الحل: نستخدم sign_in probe بكود وهمي للتمييز:
-            #   ✅ مسجل   → PhoneCodeInvalidError  (الكود خاطئ لكن الرقم موجود)
-            #   ✅ 2FA    → SessionPasswordNeededError  (مسجل مع حماية إضافية)
-            #   🆕 غير مسجل → خطأ يحتوي UNOCCUPIED/signup
-            # ═══════════════════════════════════════════════════════════════
-            try:
-                await asyncio.wait_for(
-                    guest_client.sign_in(
-                        phone=phone_number,
-                        code="99999",
-                        phone_code_hash=sent_code.phone_code_hash
-                    ),
-                    timeout=10.0
-                )
-                # إذا نجح sign_in بكود وهمي (نادر جداً) → نعتبره مسجلاً
-                logger.info(f"Result for {phone_number}: registered (sign_in succeeded unexpectedly)")
-                return "registered"
-            except PhoneCodeInvalidError:
-                logger.info(f"Result for {phone_number}: registered (PhoneCodeInvalidError → number exists)")
-                return "registered"
-            except SessionPasswordNeededError:
-                logger.info(f"Result for {phone_number}: registered (SessionPasswordNeededError → 2FA enabled)")
-                return "registered"
-            except Exception as probe_err:
-                probe_type = type(probe_err).__name__
-                probe_str  = str(probe_err).upper()
-                # أي خطأ يحمل أحد هذه الكلمات → الرقم غير مسجل
-                UNREGISTERED_KEYWORDS = [
-                    "UNOCCUPIED", "SIGN_UP", "SIGNUP",
-                    "NOT_REGISTERED", "PHONE_NUMBER_UNOCCUPIED"
-                ]
-                if any(kw in probe_str for kw in UNREGISTERED_KEYWORDS):
-                    logger.info(f"Result for {phone_number}: unregistered ({probe_type}: {probe_err})")
-                    return "unregistered"
-                # خطأ غير متوقع من sign_in — نعتبر الرقم مسجلاً لأن send_code نجح
-                logger.warning(
-                    f"[PROBE] sign_in probe for {phone_number}: {probe_type}: {probe_err} "
-                    f"→ defaulting to registered"
-                )
-                return "registered"
+            # الخطوة 2: الرقم ليس محظوراً → contacts.ResolvePhone للتمييز الدقيق
+            return await self._resolve_phone(acc, phone_number)
         except (UserDeactivatedError, AuthKeyUnregisteredError) as deact_err:
             logger.error(f"Credentials for checker #{acc.db_id} are invalid/deactivated: {deact_err}. Disabling...")
             try:
