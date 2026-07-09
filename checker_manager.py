@@ -15,6 +15,7 @@ from telethon.errors import (
     SmsCodeCreateFailedError,
     SendCodeUnavailableError,
     ForbiddenError,
+    PhoneNotOccupiedError,
 )
 import database as db
 
@@ -167,7 +168,7 @@ class CheckerManager:
         الطريقة الوحيدة الموثوقة للتمييز بين مسجل وغير مسجل في 2024+:
         استخدام contacts.ResolvePhone من حساب checker مسجل.
         - مسجل   → يُرجع users غير فارغة
-        - غير مسجل → يُرجع PHONE_NOT_OCCUPIED
+        - غير مسجل → يُرجع PhoneNotOccupiedError
         لا تتأثر بـ anti-enumeration حيث تعمل من حساب مصرح.
         """
         from telethon.tl.functions.contacts import ResolvePhoneRequest
@@ -183,17 +184,24 @@ class CheckerManager:
                 logger.info(f"Result for {phone_number}: registered (ResolvePhone → {len(result.users)} user)")
                 return "registered"
             else:
-                logger.info(f"Result for {phone_number}: unregistered (ResolvePhone → empty)")
+                logger.info(f"Result for {phone_number}: unregistered (ResolvePhone → empty users)")
                 return "unregistered"
+        except PhoneNotOccupiedError:
+            # هذا هو الخطأ الصحيح للأرقام غير المسجلة على Telegram
+            logger.info(f"Result for {phone_number}: unregistered (PhoneNotOccupiedError)")
+            return "unregistered"
         except Exception as e:
-            err_str = str(e).upper()
-            if any(kw in err_str for kw in [
-                "PHONE_NOT_OCCUPIED", "NOT_OCCUPIED",
-                "UNOCCUPIED", "NOT_FOUND", "NOT FOUND"
-            ]):
-                logger.info(f"Result for {phone_number}: unregistered (ResolvePhone: {type(e).__name__}: {e})")
+            err_type = type(e).__name__
+            err_str  = str(e).upper()
+            # شبكة أمان إضافية بالكلمات المحتملة
+            UNREGISTERED_SIGNALS = [
+                "PHONE_NOT_OCCUPIED", "NOT_OCCUPIED", "UNOCCUPIED",
+                "NOT_FOUND", "NO USER IS ASSOCIATED", "PHONENOTOCCUPIED"
+            ]
+            if any(kw in err_str or kw in err_type.upper() for kw in UNREGISTERED_SIGNALS):
+                logger.info(f"Result for {phone_number}: unregistered ({err_type}: {e})")
                 return "unregistered"
-            logger.warning(f"[RESOLVE] {phone_number}: {type(e).__name__}: {e} → defaulting to registered")
+            logger.warning(f"[RESOLVE] {phone_number}: {err_type}: {e} → defaulting to registered")
             return "registered"
 
     async def _check_with_guest(self, guest_client, phone_number, acc, retry_count=0) -> str:
