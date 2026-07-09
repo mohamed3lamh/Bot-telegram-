@@ -632,7 +632,11 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
 
             # --- الفحص عبر Telethon: مسجل / محظور / غير مسجل ---
             try:
-                check_result = await checker_manager.check_number(phone_number)
+                check_result = await checker_manager.check_number(
+                    phone_number,
+                    durian_username=username,
+                    durian_api_key=api_key
+                )
             except Exception as e:
                 logger.error(
                     f"[DEBUG][STEP-2][CHECK_EXCEPTION] "

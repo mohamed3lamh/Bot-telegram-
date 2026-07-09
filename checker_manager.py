@@ -16,6 +16,8 @@ from telethon.errors import (
     SendCodeUnavailableError,
     ForbiddenError,
     PhoneNotOccupiedError,
+    PhoneCodeInvalidError,
+    SessionPasswordNeededError,
 )
 import database as db
 
@@ -137,7 +139,17 @@ class CheckerManager:
         if acc.is_active and not acc.is_limited:
             await self._start_client(acc)
 
-    async def check_number(self, phone_number: str) -> str:
+    async def check_number(self, phone_number: str,
+                           durian_username: str = "",
+                           durian_api_key: str = "") -> str:
+        """
+        يفحص الرقم ويُرجع حالته:
+          - registered   : لديه حساب Telegram
+          - unregistered : ليس لديه حساب
+          - banned       : محظور
+          - unknown      : تعذّر التحقق
+        إذا تم تمرير durian_username/api_key نستخدم الـ OTP الحقيقي.
+        """
         acc = self._get_next_account()
         if not acc:
             logger.warning("No active checker accounts available")
@@ -147,11 +159,12 @@ class CheckerManager:
         
         guest_client = TelegramClient(StringSession(), acc.api_id, acc.api_hash)
         try:
-            # Connect guest client with a strict timeout of 10.0 seconds
             await asyncio.wait_for(guest_client.connect(), timeout=10.0)
-            
-            # Perform check with retry support for PhoneMigrateError
-            result = await self._check_with_guest(guest_client, phone_number, acc)
+            result = await self._check_with_guest(
+                guest_client, phone_number, acc,
+                durian_username=durian_username,
+                durian_api_key=durian_api_key
+            )
             acc.total_checked += 1
             return result
         except Exception as e:
@@ -163,59 +176,102 @@ class CheckerManager:
             except Exception:
                 pass
 
-    async def _resolve_phone(self, acc, phone_number: str) -> str:
+    async def _read_otp_from_durian(self, username: str, api_key: str,
+                                     phone_number: str, timeout_sec: int = 25) -> str:
         """
-        الطريقة الوحيدة الموثوقة للتمييز بين مسجل وغير مسجل في 2024+:
-        استخدام contacts.ResolvePhone من حساب checker مسجل.
-        - مسجل   → يُرجع users غير فارغة
-        - غير مسجل → يُرجع PhoneNotOccupiedError
-        لا تتأثر بـ anti-enumeration حيث تعمل من حساب مصرح.
+        ينتظر وصول الـ OTP عبر DurianRCS ويستخرج الكود من نص الرسالة.
+        يُجرب كل 3 ثوان حتى timeout_sec ثانية.
         """
-        from telethon.tl.functions.contacts import ResolvePhoneRequest
-        if not acc.client or not acc.connected:
-            logger.warning(f"[RESOLVE] acc #{acc.db_id} not connected → defaulting to registered")
-            return "registered"
-        try:
-            result = await asyncio.wait_for(
-                acc.client(ResolvePhoneRequest(phone=phone_number)),
-                timeout=10.0
-            )
-            if result.users:
-                logger.info(f"Result for {phone_number}: registered (ResolvePhone → {len(result.users)} user)")
-                return "registered"
-            else:
-                logger.info(f"Result for {phone_number}: unregistered (ResolvePhone → empty users)")
-                return "unregistered"
-        except PhoneNotOccupiedError:
-            # هذا هو الخطأ الصحيح للأرقام غير المسجلة على Telegram
-            logger.info(f"Result for {phone_number}: unregistered (PhoneNotOccupiedError)")
-            return "unregistered"
-        except Exception as e:
-            err_type = type(e).__name__
-            err_str  = str(e).upper()
-            # شبكة أمان إضافية بالكلمات المحتملة
-            UNREGISTERED_SIGNALS = [
-                "PHONE_NOT_OCCUPIED", "NOT_OCCUPIED", "UNOCCUPIED",
-                "NOT_FOUND", "NO USER IS ASSOCIATED", "PHONENOTOCCUPIED"
-            ]
-            if any(kw in err_str or kw in err_type.upper() for kw in UNREGISTERED_SIGNALS):
-                logger.info(f"Result for {phone_number}: unregistered ({err_type}: {e})")
-                return "unregistered"
-            logger.warning(f"[RESOLVE] {phone_number}: {err_type}: {e} → defaulting to registered")
-            return "registered"
+        import re
+        from durian_api import DurianAPI
+        deadline = asyncio.get_event_loop().time() + timeout_sec
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                sms_result = await DurianAPI.get_sms(username, api_key, phone_number)
+                if sms_result.get("status") == "success":
+                    sms_text = sms_result.get("sms", "")
+                    # استخراج الكود (5-6 أرقام متتالية)
+                    match = re.search(r'\b(\d{5,6})\b', str(sms_text))
+                    if match:
+                        code = match.group(1)
+                        logger.info(f"[OTP] Got real code for {phone_number}: {code}")
+                        return code
+            except Exception as e:
+                logger.warning(f"[OTP] get_sms error for {phone_number}: {e}")
+            await asyncio.sleep(3)
+        logger.warning(f"[OTP] Timed out waiting for SMS for {phone_number}")
+        return ""
 
-    async def _check_with_guest(self, guest_client, phone_number, acc, retry_count=0) -> str:
+    async def _check_with_guest(self, guest_client, phone_number, acc,
+                                 durian_username: str = "",
+                                 durian_api_key: str = "",
+                                 retry_count: int = 0) -> str:
         if retry_count > 3:
             return "unknown"
 
         try:
-            # الخطوة 1: guest client يكشف الحظر (PhoneNumberBannedError)
-            await asyncio.wait_for(
+            # الخطوة 1: إرسال طلب الكود — يكشف الحظر ويرسل OTP لـ SIM
+            sent_code = await asyncio.wait_for(
                 guest_client.send_code_request(phone_number),
                 timeout=12.0
             )
-            # الخطوة 2: الرقم ليس محظوراً → contacts.ResolvePhone للتمييز الدقيق
-            return await self._resolve_phone(acc, phone_number)
+            phone_code_hash = sent_code.phone_code_hash
+
+            # الخطوة 2: قراءة الـ OTP الحقيقي من DurianRCS
+            real_otp = ""
+            if durian_username and durian_api_key:
+                real_otp = await self._read_otp_from_durian(
+                    durian_username, durian_api_key, phone_number
+                )
+
+            if not real_otp:
+                # لم يصل الـ OTP (timeout) → نستخدم كود وهمي كملاذ أخير
+                logger.warning(f"[OTP] No real OTP for {phone_number}, using fallback probe")
+                real_otp = "00000"  # كود وهمي — سيُرجع خطأ لكن لن يحدد الحالة
+
+            # الخطوة 3: استخدام الـ OTP في sign_in لتحديد الحالة
+            try:
+                await asyncio.wait_for(
+                    guest_client.sign_in(
+                        phone=phone_number,
+                        code=real_otp,
+                        phone_code_hash=phone_code_hash
+                    ),
+                    timeout=10.0
+                )
+                # sign_in نجح تماماً → الرقم مسجل
+                logger.info(f"Result for {phone_number}: registered (sign_in succeeded with real OTP)")
+                return "registered"
+
+            except SessionPasswordNeededError:
+                # سجل دخول نجح ويحتاج 2FA → مسجل
+                logger.info(f"Result for {phone_number}: registered (2FA required → number exists)")
+                return "registered"
+
+            except PhoneCodeInvalidError:
+                if real_otp == "00000":
+                    # كود وهمي وتم رفضه → لا نستطيع تحديد الحالة
+                    logger.warning(f"Result for {phone_number}: unknown (fallback OTP rejected, no real SMS received)")
+                    return "unknown"
+                # الكود الحقيقي خاطئ (نادر جداً) → الرقم مسجل لكن الكود فات
+                logger.info(f"Result for {phone_number}: registered (real OTP expired/wrong but number exists)")
+                return "registered"
+
+            except Exception as signin_err:
+                err_str = str(signin_err).upper()
+                err_type = type(signin_err).__name__.upper()
+                # مؤشرات الـ unregistered
+                UNREGISTERED_SIGNALS = [
+                    "UNOCCUPIED", "SIGN_UP", "SIGNUP",
+                    "NOT_REGISTERED", "PHONE_NUMBER_UNOCCUPIED",
+                    "PHONENOTOCCUPIED"
+                ]
+                if any(kw in err_str or kw in err_type for kw in UNREGISTERED_SIGNALS):
+                    logger.info(f"Result for {phone_number}: unregistered ({type(signin_err).__name__}: {signin_err})")
+                    return "unregistered"
+                logger.warning(f"[SIGN_IN] {phone_number}: {type(signin_err).__name__}: {signin_err} → unknown")
+                return "unknown"
+
         except (UserDeactivatedError, AuthKeyUnregisteredError) as deact_err:
             logger.error(f"Credentials for checker #{acc.db_id} are invalid/deactivated: {deact_err}. Disabling...")
             try:
@@ -252,7 +308,12 @@ class CheckerManager:
                     guest_client.session.set_dc(e.new_dc, ip, port)
                 await asyncio.wait_for(guest_client.disconnect(), timeout=3.0)
                 await asyncio.wait_for(guest_client.connect(), timeout=8.0)
-                return await self._check_with_guest(guest_client, phone_number, acc, retry_count + 1)
+                return await self._check_with_guest(
+                    guest_client, phone_number, acc,
+                    durian_username=durian_username,
+                    durian_api_key=durian_api_key,
+                    retry_count=retry_count + 1
+                )
             except (UserDeactivatedError, AuthKeyUnregisteredError) as deact_err:
                 logger.error(f"Checker account #{acc.db_id} deactivated during migration retry: {deact_err}")
                 try:
