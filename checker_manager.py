@@ -15,6 +15,8 @@ from telethon.errors import (
     SmsCodeCreateFailedError,
     SendCodeUnavailableError,
     ForbiddenError,
+    PhoneCodeInvalidError,
+    SessionPasswordNeededError,
 )
 import database as db
 
@@ -165,19 +167,56 @@ class CheckerManager:
     async def _check_with_guest(self, guest_client, phone_number, acc, retry_count=0) -> str:
         if retry_count > 3:
             return "unknown"
-            
-        from telethon.tl.types.auth import SentCodeTypeApp
+
         try:
             sent_code = await asyncio.wait_for(
                 guest_client.send_code_request(phone_number),
                 timeout=12.0
             )
-            if isinstance(sent_code.type, SentCodeTypeApp):
-                logger.info(f"Result for {phone_number}: registered (SentCodeTypeApp)")
+
+            # ═══════════════════════════════════════════════════════════════
+            # FIX: Telegram API (2024+) يُرجع SentCodeTypeApp لجميع الأرقام
+            # (مسجلة وغير مسجلة) لمنع phone enumeration attacks.
+            # الحل: نستخدم sign_in probe بكود وهمي للتمييز:
+            #   ✅ مسجل   → PhoneCodeInvalidError  (الكود خاطئ لكن الرقم موجود)
+            #   ✅ 2FA    → SessionPasswordNeededError  (مسجل مع حماية إضافية)
+            #   🆕 غير مسجل → خطأ يحتوي UNOCCUPIED/signup
+            # ═══════════════════════════════════════════════════════════════
+            try:
+                await asyncio.wait_for(
+                    guest_client.sign_in(
+                        phone=phone_number,
+                        code="99999",
+                        phone_code_hash=sent_code.phone_code_hash
+                    ),
+                    timeout=10.0
+                )
+                # إذا نجح sign_in بكود وهمي (نادر جداً) → نعتبره مسجلاً
+                logger.info(f"Result for {phone_number}: registered (sign_in succeeded unexpectedly)")
                 return "registered"
-            else:
-                logger.info(f"Result for {phone_number}: unregistered (succeeded with {sent_code.type.__class__.__name__})")
-                return "unregistered"
+            except PhoneCodeInvalidError:
+                logger.info(f"Result for {phone_number}: registered (PhoneCodeInvalidError → number exists)")
+                return "registered"
+            except SessionPasswordNeededError:
+                logger.info(f"Result for {phone_number}: registered (SessionPasswordNeededError → 2FA enabled)")
+                return "registered"
+            except Exception as probe_err:
+                probe_type = type(probe_err).__name__
+                probe_str  = str(probe_err).upper()
+                # أي خطأ يحمل أحد هذه الكلمات → الرقم غير مسجل
+                UNREGISTERED_KEYWORDS = [
+                    "UNOCCUPIED", "SIGN_UP", "SIGNUP",
+                    "NOT_REGISTERED", "PHONE_NUMBER_UNOCCUPIED"
+                ]
+                if any(kw in probe_str for kw in UNREGISTERED_KEYWORDS):
+                    logger.info(f"Result for {phone_number}: unregistered ({probe_type}: {probe_err})")
+                    return "unregistered"
+                # خطأ غير متوقع من sign_in — نعتبر الرقم مسجلاً لأن send_code نجح
+                logger.warning(
+                    f"[PROBE] sign_in probe for {phone_number}: {probe_type}: {probe_err} "
+                    f"→ defaulting to registered"
+                )
+                return "registered"
         except (UserDeactivatedError, AuthKeyUnregisteredError) as deact_err:
             logger.error(f"Credentials for checker #{acc.db_id} are invalid/deactivated: {deact_err}. Disabling...")
             try:
