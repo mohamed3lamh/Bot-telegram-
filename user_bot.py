@@ -7,9 +7,8 @@ from telegram.request import HTTPXRequest
 from telegram.constants import ParseMode
 import database as db
 from durian_api import DurianAPI
-from checker_manager import checker_manager
 
-
+from telegram_checker.checker import telegram_checker 
 
 logger = logging.getLogger(__name__)
 
@@ -395,7 +394,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         bot_owner_id = user_id
 
         context.job_queue.run_repeating(
-            check_and_hunt_numbers, interval=4, first=1, user_id=user_id,
+            check_and_hunt_numbers, interval=1, first=1, user_id=user_id,
             name=f"hunt_{user_id}"
         )
         await asyncio.to_thread(db.set_hunting_status, user_id, 1)
@@ -418,7 +417,61 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         await show_country_settings(update, user_id, country_code)
         return
 
+    elif data.startswith("set_working_"):
+        country_code = data.replace("set_working_", "")
+        await asyncio.to_thread(db.update_country_settings, user_id, country_code, number_type="working")
+        await query.answer("✔️ تم تعيين: شغال فقط", show_alert=False)
+        await show_country_settings(update, user_id, country_code)
+        return
 
+    elif data.startswith("set_banned_"):
+        country_code = data.replace("set_banned_", "")
+        await asyncio.to_thread(db.update_country_settings, user_id, country_code, number_type="banned")
+        await query.answer("✔️ تم تعيين: محظور فقط", show_alert=False)
+        await show_country_settings(update, user_id, country_code)
+        return
+
+    elif data.startswith("cycle_session_"):
+        country_code = data.replace("cycle_session_", "")
+        settings = await asyncio.to_thread(db.get_country_settings, user_id, country_code)
+        current = settings.get("session_status", "all")
+        # الدورة: all -> no_session -> has_session -> all
+        next_status = {"all": "no_session", "no_session": "has_session", "has_session": "all"}
+        new_status = next_status.get(current, "all")
+        await asyncio.to_thread(db.update_country_settings, user_id, country_code, session_status=new_status)
+        status_names = {"all": "الاثنين معاً", "no_session": "بدون جلسة فقط", "has_session": "لديه جلسة فقط"}
+        await query.answer(f"✔️ تم تعيين: {status_names.get(new_status, new_status)}", show_alert=False)
+        await show_country_settings(update, user_id, country_code)
+        return
+        
+    elif data.startswith("set_number_type_"):
+        country_code = data.replace("set_number_type_", "")
+        await show_number_type_options(update, user_id, country_code)
+        return
+
+    elif data.startswith("save_number_type_"):
+        # الصيغة: save_number_type_COUNTRYCODE_VALUE
+        parts = data.split("_")
+        country_code = parts[3]
+        value = parts[4]
+        await asyncio.to_thread(db.update_country_settings, user_id, country_code, number_type=value)
+        await query.answer("✔️ تم تحديث نوع الرقم", show_alert=True)
+        await show_country_settings(update, user_id, country_code)
+        return
+
+    elif data.startswith("set_session_status_"):
+        country_code = data.replace("set_session_status_", "")
+        await show_session_status_options(update, user_id, country_code)
+        return
+
+    elif data.startswith("save_session_status_"):
+        parts = data.split("_")
+        country_code = parts[3]
+        value = parts[4]
+        await asyncio.to_thread(db.update_country_settings, user_id, country_code, session_status=value)
+        await query.answer("✔️ تم تحديث حالة الجلسة", show_alert=True)
+        await show_country_settings(update, user_id, country_code)
+        return
     elif data.startswith("add_country_page_"):
         page = int(data.split("_")[-1])
         items_per_page = 23
@@ -465,9 +518,135 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         await query.answer(f"✔️ تمت إضافة {country_name_with_emoji} بنجاح", show_alert=True)
         # لا نغير الصفحة، يبقى المستخدم في نفس قائمة الدول
         return
+    elif data.startswith(("code_", "unban_", "cancel_", "rate_", "weak_")):
+        parts = data.split("_", 2)
+        if len(parts) < 3:
+            await safe_answer(query, "⚠️ هذه الأزرار القديمة غير مدعومة...", show_alert=True)
+            return
+        action = parts[0]
+        username = parts[1]
+        phone = parts[2]
 
+        # استخدام مالك البوت للبحث عن الحساب
+        owner_id = user_id
+        try:
+            def _get_owner_id():
+                with db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute("SELECT user_id FROM user_bots WHERE token = %s", (context.bot.token,))
+                        row = cursor.fetchone()
+                        return row[0] if row else None
+                    finally:
+                        cursor.close()
+            fetched_owner = await asyncio.to_thread(_get_owner_id)
+            if fetched_owner:
+                owner_id = fetched_owner
+        except Exception as e:
+            logger.error(f"Error querying bot owner by token: {e}")
+        accounts = await asyncio.to_thread(db.get_all_site_accounts, owner_id)
+        api_key = None
+        for acc_id, acc_username, acc_api_key, _ in accounts:
+            if acc_username == username:
+                api_key = acc_api_key
+                break
+        if not api_key:
+            await safe_answer(query, "❌ الحساب المرتبط بهذا الرقم غير موجود!", show_alert=True)
+            return
 
+        if action == "code":
+            await safe_answer(query, "⏳ جاري طلب الكود يرجى الانتظار", show_alert=True)
+            try:
+                sms_res = await DurianAPI.get_sms(username, api_key, phone)
+                if sms_res["status"] == "success":
+                    # استخراج سطر الدولة من النص القديم
+                    old_text = query.message.text_html
+                    country_line = ""
+                    for line in old_text.split("\n"):
+                        if "- الـدولـة :" in line:
+                            country_line = line.strip()
+                            break
+                    
+                    # بناء النص الجديد
+                    updated_text = (
+                        f"<b>🔰 تـم شـراء رقـم جـديـد مـن DurianRCS 🔰</b>\n\n"
+                        f"<b>    - الـرقـــــم : <code>{phone}</code></b>\n"
+                        f"<b>    {country_line}</b>\n"
+                        f"<b>    - الـحـالـة : ✅ تـم الـوصـول</b>\n"
+                        f"<b>    - الــكـــود : {sms_res['sms']}</b>"
+                    )
+                    try:
+                        await query.message.edit_text(text=updated_text, reply_markup=None, parse_mode=ParseMode.HTML)
+                    except Exception:
+                        pass
+                else:
+                    pass
+            except Exception as e:
+                logger.error(f"Error fetching SMS for {phone}: {e}")
+                await query.message.reply_text("❌ فشل جلب الكود، حاول لاحقًا.")
+        elif action == "cancel":
+            try:
+                success = await DurianAPI.cancel_number(username, api_key, phone)
+                if success:
+                    try:
+                        await query.message.delete()
+                    except Exception:
+                        pass
+                    await safe_answer(query, "🗑️ تم إلغاء الرقم بنجاح وحذفه من القناة.", show_alert=True)
+                else:
+                    await safe_answer(query, "❌ فشل إلغاء الرقم، ربما انتهى وقته أو تم تفعيله.", show_alert=True)
+            except Exception as e:
+                logger.error(f"Error cancelling number {phone}: {e}")
+                await safe_answer(query, "❌ خطأ في الإلغاء", show_alert=True)
 
+        elif action == "unban":
+            await safe_answer(query, "⚙️ جاري إرسال طلب فك الحظر...", show_alert=True)
+        elif action == "rate":
+            await safe_answer(query, "📊 نسبة وصول الأكواد الحالية لهذا النطاق هي: 94%", show_alert=True)
+        elif action == "weak":
+            await safe_answer(query, "🧌 تم تصنيف جودة هذا النطاق كـ (ضعيفة) مؤقتاً.", show_alert=True)
+
+async def safe_answer(query, text=None, show_alert=False):
+    try:
+        await query.answer(text=text, show_alert=show_alert)
+    except Exception as e:
+        logger.warning(f"Failed to answer callback query: {e}")
+
+async def show_number_type_options(update: Update, user_id: int, country_code: str):
+    """عرض خيارات نوع الرقم"""
+    country_name = country_code
+    for c in ALL_COUNTRIES:
+        if c["code"] == country_code:
+            country_name = c["name"]
+            break
+    
+    text = f"📱 **اختر نوع الرقم لـ {country_name}:**"
+    keyboard = [
+        [InlineKeyboardButton("📱 شغال", callback_data=f"save_number_type_{country_code}_working")],
+        [InlineKeyboardButton("🚫 محظور", callback_data=f"save_number_type_{country_code}_banned")],
+        [InlineKeyboardButton("🌐 الكل", callback_data=f"save_number_type_{country_code}_all")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data=f"country_settings_{country_code}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
+
+async def show_session_status_options(update: Update, user_id: int, country_code: str):
+    """عرض خيارات حالة الجلسة"""
+    country_name = country_code
+    for c in ALL_COUNTRIES:
+        if c["code"] == country_code:
+            country_name = c["name"]
+            break
+    
+    text = f"🔍 **اختر حالة الجلسة لـ {country_name}:**"
+    keyboard = [
+        [InlineKeyboardButton("✅ بدون جلسة", callback_data=f"save_session_status_{country_code}_no_session")],
+        [InlineKeyboardButton("👤 لديه جلسة", callback_data=f"save_session_status_{country_code}_has_session")],
+        [InlineKeyboardButton("🔄 الاثنين معاً", callback_data=f"save_session_status_{country_code}_all")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data=f"country_settings_{country_code}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
 # ==================== 6. عرض وإدارة الدول المختارة ====================
 async def show_manage_countries(update: Update, user_id: int):
     """عرض قائمة الدول المختارة مع أيقونات الإعدادات"""
@@ -501,12 +680,50 @@ async def show_country_settings(update: Update, user_id: int, country_code: str)
             country_flag = c["name"].split(" ")[-1] if " " in c["name"] else "🌐"
             break
     
+    # جلب الإعدادات الحالية
+    settings = await asyncio.to_thread(db.get_country_settings, user_id, country_code)
+    number_type = settings.get("number_type", "all")
+    session_status = settings.get("session_status", "all")
+    
+    # --- تحديد أيقونات الأزرار بناءً على الإعدادات الحالية ---
+    # زر "شغال"
+    if number_type == "working":
+        btn_working = "✅ شغال"
+    else:
+        btn_working = "❌ شغال"
+    
+    # زر "محظور"
+    if number_type == "banned":
+        btn_banned = "✅ محظور"
+    else:
+        btn_banned = "❌ محظور"
+    
+    # زر حالة الجلسة (دورة: all -> no_session -> has_session -> all)
+    if session_status == "all":
+        btn_session = "✅ الاثنين معاً"
+    elif session_status == "no_session":
+        btn_session = "🟢 بدون جلسة فقط"
+    elif session_status == "has_session":
+        btn_session = "🔴 لديه جلسة فقط"
+    else:
+        btn_session = "✅ الاثنين معاً"
+    
     text = (
-        f"🌍 **إعدادات الدولة: {country_name} {country_flag}**\n\n"
-        f"يمكنك حذف الدولة من قائمة الصيد الخاصة بك عبر الضغط على الزر أدناه."
+        f"🌍 **إعدادات الدولة**\n\n"
+        f"يمكنك تعديل الإعدادات التالية:\n"
+        f"• نوع الرقم: محظور / شغال\n"
+        f"• حالة الجلسة: بدون جلسة / لديه جلسة / الاثنين معاً\n"
+        f"• حذف الدولة من قائمة الصيد"
     )
     
     keyboard = [
+        # زر اسم الدولة والعلم في الأعلى (للزينة فقط)
+        [InlineKeyboardButton(f"{country_name} {country_flag}", callback_data="noop")],
+        # زر "شغال" و "محظور" بجانب بعضهما
+        [InlineKeyboardButton(btn_working, callback_data=f"set_working_{country_code}"),
+         InlineKeyboardButton(btn_banned, callback_data=f"set_banned_{country_code}")],
+        # زر حالة الجلسة
+        [InlineKeyboardButton(btn_session, callback_data=f"cycle_session_{country_code}")],
         # زر حذف الدولة
         [InlineKeyboardButton("🗑️ حذف الدولة", callback_data=f"delete_country_{country_code}")],
         # زر الرجوع
@@ -567,6 +784,15 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"[User: {user_id}] فشل تحديث حالة الصيد إلى متوقف بعد إلغاء المهمة: {e}")
         return
 
+    # التأكد من وجود حساب فاحص نشط ومتاح قبل سحب أي رقم من الموقع لتفادي هدر الأموال
+    # وتجنب تراكم أرقام بحالة "غير معروفة"
+    checker_probe = await telegram_checker.get_available_account()
+    if not checker_probe:
+        logger.warning(
+            f"[User: {user_id}] تم تخطي دورة الصيد هذه لأنه لا يوجد أي حساب فاحص نشط أو متاح حالياً (جميع الحسابات في FloodWait أو معطلة)."
+        )
+        return
+
     if user_id not in repeat_tracker:
         repeat_tracker[user_id] = {}
 
@@ -590,70 +816,14 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 f"Durian API order={api_delay:.4f}s"
             )
 
-            # ══════════════════════════════════════════
-            # [DEBUG-STEP-1] استلام الرقم من DurianRCS
-            # ══════════════════════════════════════════
-            logger.warning(
-                f"[DEBUG][STEP-1][DURIAN_RESPONSE] "
-                f"user={user_id} | account={username} | country={clean_country} | "
-                f"result_status={result.get('status') if result else 'None'} | "
-                f"result_keys={list(result.keys()) if result else 'None'} | "
-                f"raw_result={result}"
-            )
-
             if not result or result.get("status") != "success":
-                logger.warning(
-                    f"[DEBUG][STEP-1][SKIP] user={user_id} | country={clean_country} | "
-                    f"REASON=result not success | status={result.get('status') if result else 'None'}"
-                )
                 return
             phone_number = result.get("number")
             if not phone_number:
-                logger.warning(
-                    f"[DEBUG][STEP-1][SKIP] user={user_id} | country={clean_country} | "
-                    f"REASON=phone_number is empty | result={result}"
-                )
                 return
 
-            logger.warning(
-                f"[DEBUG][STEP-1][GOT_NUMBER] "
-                f"user={user_id} | phone={phone_number} | country={clean_country} | account={username}"
-            )
-
-            t_number_start = time.perf_counter()
-
-            # ══════════════════════════════════════════
-            # [DEBUG-STEP-2] قبل استدعاء check_number()
-            # ══════════════════════════════════════════
-            logger.warning(
-                f"[DEBUG][STEP-2][BEFORE_CHECK] "
-                f"phone={phone_number} | calling checker_manager.check_number()"
-            )
-
-            # --- الفحص عبر Telethon: مسجل / محظور / غير مسجل ---
-            try:
-                check_result = await checker_manager.check_number(
-                    phone_number,
-                    durian_username=username,
-                    durian_api_key=api_key
-                )
-            except Exception as e:
-                logger.error(
-                    f"[DEBUG][STEP-2][CHECK_EXCEPTION] "
-                    f"phone={phone_number} | exception_type={type(e).__name__} | error={e}"
-                )
-                check_result = "unknown"
-
-            # ══════════════════════════════════════════
-            # [DEBUG-STEP-3] بعد check_number()
-            # ══════════════════════════════════════════
+            # --- TRACE LOGS START ---
             import datetime
-            logger.warning(
-                f"[DEBUG][STEP-3][AFTER_CHECK] "
-                f"phone={phone_number} | check_result='{check_result}' | "
-                f"time={datetime.datetime.now().isoformat()}"
-            )
-
             req_id = result.get("id") or result.get("order") or "N/A"
             logger.info(
                 f"\n==============================\n"
@@ -669,27 +839,53 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 f"Number entered user_bot.py\n"
                 f"\n"
                 f"[STEP 3]\n"
-                f"Telethon check: {check_result}"
+                f"Sending number to TelegramChecker"
             )
 
-            if check_result == "registered":
-                status_text = "🟢 مسجل"
-            elif check_result == "banned":
-                status_text = "🔴 محظور"
-            elif check_result == "unregistered":
-                status_text = "🆕 غير مسجل"
-            else:
-                status_text = "🟡 غير معروف"
+            t_number_start = time.perf_counter()
 
-            # ══════════════════════════════════════════
-            # [DEBUG-STEP-4] بعد تحويل الحالة إلى status_text
-            # ══════════════════════════════════════════
-            logger.warning(
-                f"[DEBUG][STEP-4][STATUS_MAPPED] "
-                f"phone={phone_number} | check_result='{check_result}' | "
-                f"status_text='{status_text}' | WILL_SEND_TO_CHANNEL=True"
-            )
-
+            # --- الفحص السريع ---
+            status_text = "🔴 حالة غير معروفة"  # افتراضي إذا لم يتم الفحص
+            try:
+                t_get_checker_start = time.perf_counter()
+                account_checker = await telegram_checker.get_available_account()
+                t_get_checker_end = time.perf_counter()
+                
+                logger.info(
+                    f"[PERF_TRACE] [Number: {phone_number}] get_available_account duration: "
+                    f"{t_get_checker_end - t_get_checker_start:.4f}s"
+                )
+                
+                if account_checker:
+                    t_check_start = time.perf_counter()
+                    check_result = await telegram_checker.check_phone(account_checker, phone_number)
+                    t_check_end = time.perf_counter()
+                    
+                    logger.info(
+                        f"[PERF_TRACE] [Number: {phone_number}] telegram_checker.check_phone duration: "
+                        f"{t_check_end - t_check_start:.4f}s"
+                    )
+                    
+                    check_status = check_result.get("status")
+                    raw_status = check_result.get("status_text", "")
+                    if raw_status:
+                        status_text = raw_status
+                    else:
+                        status_text = "⚪️ غير معروف / معلق"
+                else:
+                    logger.warning(
+                        f"[STEP 4] Selected checker account failed.\n"
+                        f"No checker account available for checking."
+                    )
+            except Exception as e:
+                import traceback
+                logger.error(
+                    f"فحص الرقم {phone_number} فشل مع استثناء:\n"
+                    f"Class: {e.__class__.__name__}\n"
+                    f"Message: {str(e)}\n"
+                    f"Traceback:\n{traceback.format_exc()}"
+                )
+                
             # --- تحديد الدولة والعلم (باستخدام COUNTRY_INFO السريعة) ---
             country_name = clean_country.upper()
             country_flag = "🌐"
@@ -740,16 +936,6 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             t_send_start = time.perf_counter()
-
-            # ══════════════════════════════════════════
-            # [DEBUG-STEP-5] قبل إرسال send_message()
-            # ══════════════════════════════════════════
-            logger.warning(
-                f"[DEBUG][STEP-5][BEFORE_SEND] "
-                f"phone={phone_number} | status='{check_result}' | "
-                f"channel={channel} | user={user_id}"
-            )
-
             # فصل إرسال الرسالة عن باقي المنطق: الرقم اشتُري بالفعل واستُهلك رصيده من DurianRCS،
             # فلو فشل الإرسال فقط (مثلاً البوت أُزيل من صلاحيات القناة) يجب ألا يُبتلع الخطأ بصمت
             # ضمن نفس except العام؛ يجب تسجيله بوضوح كـ"رقم مدفوع فُقد" لتمييزه عن فشل السحب/الفحص.
@@ -762,22 +948,11 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception as send_err:
                 logger.error(
-                    f"[DEBUG][STEP-5][SEND_FAILED] "
-                    f"⚠️ [رقم مدفوع مفقود] phone={phone_number} | status='{check_result}' | "
-                    f"user={user_id} | account={username} | channel={channel} | "
-                    f"error_type={type(send_err).__name__} | error={send_err}"
+                    f"⚠️ [رقم مدفوع مفقود] فشل إرسال الرقم {phone_number} (مستخدم {user_id}, حساب {username}) "
+                    f"إلى القناة {channel} رغم استهلاك الرصيد من DurianRCS بالفعل. السبب: {send_err}"
                 )
                 return
             t_send_end = time.perf_counter()
-
-            # ══════════════════════════════════════════
-            # [DEBUG-STEP-6] بعد نجاح الإرسال
-            # ══════════════════════════════════════════
-            logger.warning(
-                f"[DEBUG][STEP-6][SEND_SUCCESS] "
-                f"phone={phone_number} | status='{check_result}' | "
-                f"channel={channel} | duration={t_send_end - t_send_start:.4f}s"
-            )
             
             logger.info(
                 f"[PERF_TRACE] [Number: {phone_number}] context.bot.send_message duration: "

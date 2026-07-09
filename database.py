@@ -136,15 +136,7 @@ def _warm_up_pool():
     conns = []
     for i in range(_POOL_SIZE):
         try:
-            if _open_connections_sem.acquire(blocking=False):
-                try:
-                    conns.append(_make_conn())
-                except Exception as e:
-                    _open_connections_sem.release()
-                    logger.warning(f"⚠️ تعذر فتح اتصال {i+1}: {e}")
-                    break
-            else:
-                break
+            conns.append(_make_conn())
         except Exception as e:
             logger.warning(f"⚠️ تعذر فتح اتصال {i+1}: {e}")
             break
@@ -289,6 +281,33 @@ def init_db():
                 """)
                 conn.commit()
 
+            # جدول حسابات الفحص
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS telegram_accounts (
+                    id SERIAL PRIMARY KEY,
+                    phone TEXT UNIQUE NOT NULL,
+                    api_id INTEGER NOT NULL,
+                    api_hash TEXT NOT NULL,
+                    string_session TEXT NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    flood_until TIMESTAMP NULL,
+                    total_checks INTEGER DEFAULT 0,
+                    last_used TIMESTAMP NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+
+            if not column_exists('telegram_accounts', 'is_active'):
+                cursor.execute("ALTER TABLE telegram_accounts ADD COLUMN is_active BOOLEAN DEFAULT TRUE")
+                conn.commit()
+            if column_exists('telegram_accounts', 'status'):
+                try:
+                    cursor.execute("ALTER TABLE telegram_accounts DROP COLUMN status")
+                    conn.commit()
+                except:
+                    pass
+
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS activity_log (
                     id SERIAL PRIMARY KEY,
@@ -349,20 +368,6 @@ def init_db():
                     amount_crypto TEXT NOT NULL,
                     wallet_address TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.commit()
-
-            # إنشاء جدول الحسابات الفاحصة (Telethon)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS checker_accounts (
-                    id SERIAL PRIMARY KEY,
-                    api_id BIGINT NOT NULL,
-                    api_hash TEXT NOT NULL,
-                    phone_number TEXT NOT NULL,
-                    is_active BOOLEAN DEFAULT TRUE,
-                    is_limited BOOLEAN DEFAULT FALSE,
-                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             conn.commit()
@@ -608,6 +613,65 @@ def delete_pending_subscription(user_id):
 def get_all_pending_subscriptions():
     return db_execute("SELECT user_id, plan, payment_method, amount_crypto, wallet_address, created_at FROM pending_subscriptions ORDER BY created_at DESC", commit=False, fetch='all')
 
+def get_all_checkers():
+    return db_execute("SELECT id, phone, is_active FROM telegram_accounts ORDER BY id", commit=False, fetch='all')
+
+def delete_checker(account_id):
+    db_execute("DELETE FROM telegram_accounts WHERE id = %s", (account_id,))
+
+def toggle_checker(account_id):
+    db_execute("UPDATE telegram_accounts SET is_active = NOT is_active WHERE id = %s", (account_id,))
+
+def get_account_flood(account_id):
+    try:
+        row = db_execute("SELECT flood_until FROM telegram_accounts WHERE id=%s", (account_id,), commit=False, fetch='one')
+        return row[0] if row else None
+    except Exception:
+        return None
+
+def save_telegram_account(phone, api_id, api_hash, string_session):
+    db_execute("""
+        INSERT INTO telegram_accounts (phone, api_id, api_hash, string_session)
+        VALUES (%s,%s,%s,%s)
+        ON CONFLICT (phone) DO UPDATE SET
+            api_id=EXCLUDED.api_id,
+            api_hash=EXCLUDED.api_hash,
+            string_session=EXCLUDED.string_session,
+            is_active = TRUE
+    """, (phone, api_id, api_hash, string_session))
+
+def get_telegram_accounts():
+    return db_execute("""
+        SELECT id, phone, api_id, api_hash, string_session, is_active,
+               flood_until, total_checks, last_used
+        FROM telegram_accounts
+        ORDER BY id
+    """, commit=False, fetch='all')
+
+def delete_telegram_account(account_id):
+    db_execute("DELETE FROM telegram_accounts WHERE id=%s", (account_id,))
+
+def set_account_flood(account_id, flood_until):
+    db_execute("UPDATE telegram_accounts SET flood_until=%s WHERE id=%s", (flood_until, account_id))
+
+def increase_account_checks(account_id):
+    db_execute("""
+        UPDATE telegram_accounts SET
+            total_checks = total_checks + 1,
+            last_used = CURRENT_TIMESTAMP
+        WHERE id = %s
+    """, (account_id,))
+
+def get_best_telegram_account():
+    return db_execute("""
+        SELECT id, phone, api_id, api_hash, string_session
+        FROM telegram_accounts
+        WHERE is_active = TRUE
+          AND (flood_until IS NULL OR flood_until < CURRENT_TIMESTAMP)
+        ORDER BY total_checks ASC, last_used ASC NULLS FIRST
+        LIMIT 1
+    """, commit=False, fetch='one')
+
 # ---------- سجل العمليات ----------
 def log_activity(user_id, action, details=""):
     db_execute("INSERT INTO activity_log (user_id, action, details) VALUES (%s, %s, %s)", (user_id, action, details))
@@ -646,38 +710,6 @@ def set_setting(key, value):
 
 def get_all_settings():
     return db_execute("SELECT key, value FROM settings ORDER BY key", commit=False, fetch='all')
-
-# ---------- Checker Accounts (Telethon) ----------
-def add_checker_account(api_id, api_hash, phone_number):
-    db_execute('''
-        INSERT INTO checker_accounts (api_id, api_hash, phone_number)
-        VALUES (%s, %s, %s)
-    ''', (api_id, api_hash, phone_number))
-
-def get_all_checker_accounts():
-    rows = db_execute(
-        'SELECT id, api_id, api_hash, phone_number, is_active, is_limited FROM checker_accounts ORDER BY id',
-        commit=False, fetch='all'
-    )
-    return rows or []
-
-def toggle_checker_account(account_id):
-    db_execute('UPDATE checker_accounts SET is_active = NOT is_active WHERE id = %s', (account_id,))
-
-def delete_checker_account(account_id):
-    db_execute('DELETE FROM checker_accounts WHERE id = %s', (account_id,))
-
-def set_checker_account_limited(account_id, limited=True):
-    db_execute(
-        'UPDATE checker_accounts SET is_limited = %s WHERE id = %s',
-        (1 if limited else 0, account_id)
-    )
-
-def set_checker_account_active(account_id, active=True):
-    db_execute(
-        'UPDATE checker_accounts SET is_active = %s WHERE id = %s',
-        (active, account_id)
-    )
 
 def update_country_settings(user_id, country_code, number_type=None, session_status=None):
     if number_type is not None:
