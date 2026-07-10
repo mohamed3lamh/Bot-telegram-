@@ -95,7 +95,8 @@ class SmartCheckStrategy:
         # A simpler way without requiring group ID beforehand: using contacts.ResolvePhoneRequest first,
         # and if it fails with ContactPhoneUnoccupiedError -> NO_SESSION.
         # If it returns a user, we can verify privacy. If it is banned, it throws PhoneNumberBannedError or is unoccupied.
-        # Let's perform a direct invite test to a temporary/d        try:
+        # Let's perform a direct invite test to a temporary/designated check channel.
+        try:
             # ResolvePhoneRequest: يكشف إذا كان الرقم مسجلاً في تيليجرام بدون إرسال SMS
             try:
                 resolved = await client(functions.contacts.ResolvePhoneRequest(phone=phone))
@@ -250,16 +251,9 @@ class SmartCheckStrategy:
                 "status": "ERROR",
                 "phone": phone,
                 "status_text": f"⚙️ خطأ من السيرفر: {error_message}"
-            }       "phone": phone,
-                    "status_text": "❌ حساب الفاحص تالف وتم تعطيله"
-                }
-
-            logger.warning(f"[Phase2] {phone} → ERROR (unhandled): {error_message}")
-            return {
-                "status": "ERROR",
-                "phone": phone,
-                "status_text": f"⚙️ خطأ من السيرفر: {error_message}"
             }
+
+
 
 
 # =====================================================================
