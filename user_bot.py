@@ -751,25 +751,32 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                         asyncio.to_thread(db.get_hunting_channel, user_id),
                         asyncio.to_thread(db.get_user_countries, user_id)
                     )
+                    # جلب إعدادات كل دولة (number_type, session_status) مع الـ countries
+                    country_settings_map = {}
+                    for cc in countries:
+                        s = await asyncio.to_thread(db.get_country_settings, user_id, cc)
+                        country_settings_map[cc] = s
                 except Exception as e:
                     # عطل DB مؤقت: لا نُلغي مهمة الصيد بسبب هذا، بل نتخطى هذه الدورة فقط
                     # ونحاول مجدداً في الدورة القادمة (بدل تعطّل صامت دائم لكل الأرقام).
                     logger.error(f"[User: {user_id}] فشل تحديث بيانات الصيد من DB (سيُعاد المحاولة لاحقاً): {e}")
                     return
                 t_db_end = time.perf_counter()
-                _db_cache[user_id] = {"accounts": active_accounts, "channel": channel, "countries": countries}
+                _db_cache[user_id] = {"accounts": active_accounts, "channel": channel, "countries": countries, "country_settings": country_settings_map}
                 _db_cache_ts[user_id] = now
                 logger.info(
                     f"[PERF_TRACE] [User: {user_id}] DB refreshed (cache miss): {t_db_end - t_db_start:.4f}s"
                 )
             else:
-                active_accounts = _db_cache[user_id]["accounts"]
-                channel        = _db_cache[user_id]["channel"]
-                countries      = _db_cache[user_id]["countries"]
+                active_accounts       = _db_cache[user_id]["accounts"]
+                channel               = _db_cache[user_id]["channel"]
+                countries             = _db_cache[user_id]["countries"]
+                country_settings_map  = _db_cache[user_id].get("country_settings", {})
     else:
-        active_accounts = _db_cache[user_id]["accounts"]
-        channel        = _db_cache[user_id]["channel"]
-        countries      = _db_cache[user_id]["countries"]
+        active_accounts       = _db_cache[user_id]["accounts"]
+        channel               = _db_cache[user_id]["channel"]
+        countries             = _db_cache[user_id]["countries"]
+        country_settings_map  = _db_cache[user_id].get("country_settings", {})
         logger.info(
             f"[PERF_TRACE] [User: {user_id}] DB served from cache (age={cache_age:.1f}s)"
         )
@@ -798,6 +805,10 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
 
     async def process_account_country(username, api_key, country_code):
         """معالجة دولة واحدة لحساب واحد، تُنفذ بشكل متوازٍ"""
+        # جلب إعدادات الفلترة لهذه الدولة
+        c_settings     = country_settings_map.get(str(country_code).strip(), {"number_type": "all", "session_status": "all"})
+        want_type      = c_settings.get("number_type", "all")       # all | working | banned
+        want_session   = c_settings.get("session_status", "all")   # all | has_session | no_session
         clean_country = str(country_code).strip()
         user_semaphore = _get_user_semaphore(user_id)
         try:
@@ -872,6 +883,43 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                         status_text = raw_status
                     else:
                         status_text = "⚪️ غير معروف / معلق"
+
+                    # ===== فلترة الأرقام بناءً على إعدادات المستخدم =====
+                    # تحويل check_status إلى تصنيف مبسط
+                    is_banned   = check_status == "BANNED"
+                    is_working  = check_status in ("HAS_SESSION", "NO_SESSION")
+                    has_session = check_status == "HAS_SESSION"
+                    no_session  = check_status == "NO_SESSION"
+
+                    # --- فلتر number_type ---
+                    if want_type == "banned" and not is_banned:
+                        logger.info(
+                            f"[FILTER] {phone_number}: تم تجاهله - المستخدم يريد (محظور) فقط "
+                            f"لكن الحالة: {check_status}"
+                        )
+                        return
+                    elif want_type == "working" and not is_working:
+                        logger.info(
+                            f"[FILTER] {phone_number}: تم تجاهله - المستخدم يريد (شغال) فقط "
+                            f"لكن الحالة: {check_status}"
+                        )
+                        return
+
+                    # --- فلتر session_status (يُطبَّق فقط على الأرقام الشغّالة غير المحظورة) ---
+                    if not is_banned:
+                        if want_session == "has_session" and not has_session:
+                            logger.info(
+                                f"[FILTER] {phone_number}: تم تجاهله - المستخدم يريد (لديه جلسة) فقط "
+                                f"لكن الحالة: {check_status}"
+                            )
+                            return
+                        elif want_session == "no_session" and not no_session:
+                            logger.info(
+                                f"[FILTER] {phone_number}: تم تجاهله - المستخدم يريد (بدون جلسة) فقط "
+                                f"لكن الحالة: {check_status}"
+                            )
+                            return
+                    # ===== نهاية الفلترة =====
                 else:
                     logger.warning(
                         f"[STEP 4] Selected checker account failed.\n"
@@ -969,7 +1017,7 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
     tasks = []
     for username, api_key in active_accounts:
         for country_code in countries:
-            tasks.append(process_account_country(username, api_key, country_code))
+            tasks.append(process_account_country(username, api_key, str(country_code).strip()))
 
     # تنفيذ جميع المهام بشكل متوازٍ
     await asyncio.gather(*tasks)
