@@ -152,15 +152,26 @@ class SmartCheckStrategy:
                         "status_text": "❌ حساب الفاحص تالف وتم تعطيله"
                     }
 
-                # أي خطأ غير معروف آخر من ResolvePhone → نعامله كـ "غير مسجل"
-                # لأن الأرقام النيجيرية وكثير من الدول النامية تعطي أخطاء غير متوقعة
-                # عند محاولة ResolvePhone برقم غير مسجل
-                logger.warning(f"[Phase2] {phone} → Treating unknown ResolvePhone error as NO_SESSION: {resolve_err}")
-                return {
-                    "status": "NO_SESSION",
-                    "phone": phone,
-                    "status_text": "🆕 غير مسجل"
-                }
+                # ✅ خصوصية المستخدم: الرقم مسجل لكن يمنع إيجاده
+                # UserPrivacyRestrictedError يعني المستخدم موجود لكن له إعدادات خصوصية
+                PRIVACY_KEYWORDS = [
+                    "PRIVACY",
+                    "USERPRIVACYRESTRICTED",
+                    "USER_PRIVACY_RESTRICTED",
+                    "PRIVACY_RESTRICTED",
+                ]
+                if any(kw in err_str or kw in err_type for kw in PRIVACY_KEYWORDS):
+                    logger.info(f"[Phase2] {phone} → HAS_SESSION (privacy restricted): {resolve_err}")
+                    return {
+                        "status": "HAS_SESSION",
+                        "phone": phone,
+                        "status_text": "⚠️ مسجل"
+                    }
+
+                # أي خطأ غير معروف آخر → Phase 3: send_code_request كـ fallback موثوق
+                logger.warning(f"[Phase2] {phone} → Unknown error, falling back to Phase 3 (send_code_request): {resolve_err}")
+                return await self._phase3_send_code(client, phone, account)
+
 
             # --- تحليل نتيجة ResolvePhone الناجحة ---
             if resolved.users:
@@ -253,7 +264,102 @@ class SmartCheckStrategy:
                 "status_text": f"⚙️ خطأ من السيرفر: {error_message}"
             }
 
+    async def _phase3_send_code(self, client, phone, account):
+        """
+        Phase 3: send_code_request - الأكثر دقة 100%.
+        - SentCodeTypeApp → مسجل على تيليجرام (HAS_SESSION)
+        - SentCodeTypeEmailCode → مسجل (HAS_SESSION)
+        - SentCodeTypeSms / Flash / MissedCall → غير مسجل على تيليجرام (NO_SESSION)
+        - PhoneNumberUnoccupiedError → غير مسجل (NO_SESSION)
+        - PhoneNumberBannedError → محظور (BANNED)
+        """
+        logger.info(f"[Phase3] Running send_code_request for {phone}")
+        try:
+            result = await client.send_code_request(phone)
+            code_type = type(result.type)
+            logger.info(f"[Phase3] {phone} → send_code type: {code_type.__name__}")
 
+            # إلغاء الكود فوراً لتجنب الرسائل الغير مرغوبة
+            try:
+                await client(functions.auth.CancelCodeRequest(
+                    phone_number=phone,
+                    phone_code_hash=result.phone_code_hash
+                ))
+            except Exception:
+                pass
+
+            # App أو Email يعني المستخدم مسجل على تيليجرام
+            if code_type in (SentCodeTypeApp, SentCodeTypeEmailCode):
+                logger.info(f"[Phase3] {phone} → HAS_SESSION (App/Email code type)")
+                return {
+                    "status": "HAS_SESSION",
+                    "phone": phone,
+                    "status_text": "⚠️ مسجل"
+                }
+            else:
+                # SMS / Flash / MissedCall = لا يوجد تطبيق تيليجرام = غير مسجل
+                logger.info(f"[Phase3] {phone} → NO_SESSION (SMS/Flash code type)")
+                return {
+                    "status": "NO_SESSION",
+                    "phone": phone,
+                    "status_text": "🆕 غير مسجل"
+                }
+
+        except PhoneNumberUnoccupiedError:
+            logger.info(f"[Phase3] {phone} → NO_SESSION (PhoneNumberUnoccupiedError)")
+            return {
+                "status": "NO_SESSION",
+                "phone": phone,
+                "status_text": "🆕 غير مسجل"
+            }
+        except PhoneNumberBannedError:
+            logger.info(f"[Phase3] {phone} → BANNED")
+            return {
+                "status": "BANNED",
+                "phone": phone,
+                "status_text": "📵 محظور"
+            }
+        except PhoneNumberInvalidError:
+            logger.info(f"[Phase3] {phone} → NO_SESSION (invalid number)")
+            return {
+                "status": "NO_SESSION",
+                "phone": phone,
+                "status_text": "🆕 غير مسجل"
+            }
+        except FloodWaitError as e:
+            await flood_manager.set_flood(account["id"], e.seconds)
+            logger.warning(f"[Phase3] {phone} → FLOOD_WAIT {e.seconds}s")
+            return {
+                "status": "FLOOD_WAIT",
+                "seconds": e.seconds,
+                "phone": phone,
+                "status_text": f"🚫 حظر مؤقت {e.seconds} ثانية"
+            }
+        except SessionPasswordNeededError:
+            # حساب الفاحص يحتاج 2FA - هذا لا ينبغي أن يحدث هنا
+            logger.warning(f"[Phase3] {phone} → HAS_SESSION (SessionPasswordNeeded on checker?)")
+            return {
+                "status": "HAS_SESSION",
+                "phone": phone,
+                "status_text": "⚠️ مسجل"
+            }
+        except Exception as e:
+            err_str = str(e).upper()
+            logger.error(f"[Phase3] {phone} → Unexpected error: {e}")
+            # آخر محاولة: تصنيف بناءً على الرسالة
+            if any(kw in err_str for kw in ["UNOCCUPIED", "NO USER", "NOT FOUND", "NOT_FOUND"]):
+                return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
+            if "BANNED" in err_str:
+                return {"status": "BANNED", "phone": phone, "status_text": "📵 محظور"}
+            if "AUTH_KEY" in err_str:
+                await account_manager.disable_account(account["id"])
+                return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
+            # في حالة الشك - نعيد ERROR لا NO_SESSION
+            return {
+                "status": "ERROR",
+                "phone": phone,
+                "status_text": f"⚙️ خطأ Phase3: {e}"
+            }
 
 
 # =====================================================================
