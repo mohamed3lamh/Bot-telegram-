@@ -95,12 +95,73 @@ class SmartCheckStrategy:
         # A simpler way without requiring group ID beforehand: using contacts.ResolvePhoneRequest first,
         # and if it fails with ContactPhoneUnoccupiedError -> NO_SESSION.
         # If it returns a user, we can verify privacy. If it is banned, it throws PhoneNumberBannedError or is unoccupied.
-        # Let's perform a direct invite test to a temporary/dummy group if possible, or use ResolvePhone.
-        # Since resolving phone doesn't send SMS and is rate-limit friendly:
-        try:
-            # Resolving phone checks if the phone exists on Telegram without SMS dispatch
-            resolved = await client(functions.contacts.ResolvePhoneRequest(phone=phone))
-            logger.info(f"Telegram ResolvePhone Response: {repr(resolved)}")
+        # Let's perform a direct invite test to a temporary/d        try:
+            # ResolvePhoneRequest: يكشف إذا كان الرقم مسجلاً في تيليجرام بدون إرسال SMS
+            try:
+                resolved = await client(functions.contacts.ResolvePhoneRequest(phone=phone))
+                logger.info(f"Telegram ResolvePhone Response: {repr(resolved)}")
+            except Exception as resolve_err:
+                # --- تصنيف أي خطأ من ResolvePhoneRequest مباشرةً ---
+                err_str = str(resolve_err).upper()
+                err_type = type(resolve_err).__name__.upper()
+
+                # أي رسالة تعني "لا يوجد مستخدم بهذا الرقم" → غير مسجل
+                NO_SESSION_KEYWORDS = [
+                    "NO USER IS ASSOCIATED",
+                    "PHONE_NUMBER_UNOCCUPIED",
+                    "NO_PHONE_ASSOCIATED",
+                    "PHONE_NOT_OCCUPIED",
+                    "USER NOT FOUND",
+                    "USER_NOT_FOUND",
+                    "UNOCCUPIED",
+                ]
+                if any(kw in err_str or kw in err_type for kw in NO_SESSION_KEYWORDS):
+                    logger.info(f"[Phase2] {phone} → NO_SESSION: {resolve_err}")
+                    return {
+                        "status": "NO_SESSION",
+                        "phone": phone,
+                        "status_text": "🆕 غير مسجل"
+                    }
+
+                # رقم محظور
+                if "PHONE_NUMBER_BANNED" in err_str or "PHONENUMBERBANNED" in err_type:
+                    return {
+                        "status": "BANNED",
+                        "phone": phone,
+                        "status_text": "📵 محظور"
+                    }
+
+                # FloodWait
+                if "FLOOD" in err_str or "FLOODWAIT" in err_type:
+                    seconds = getattr(resolve_err, "seconds", 60)
+                    await flood_manager.set_flood(account["id"], seconds)
+                    return {
+                        "status": "FLOOD_WAIT",
+                        "seconds": seconds,
+                        "phone": phone,
+                        "status_text": f"🚫 حظر مؤقت {seconds} ثانية"
+                    }
+
+                # حساب الفاحص تالف
+                if "AUTH_KEY_UNREGISTERED" in err_str or "AUTH_KEY_DUPLICATED" in err_str:
+                    await account_manager.disable_account(account["id"])
+                    return {
+                        "status": "ACCOUNT_DISABLED",
+                        "phone": phone,
+                        "status_text": "❌ حساب الفاحص تالف وتم تعطيله"
+                    }
+
+                # أي خطأ غير معروف آخر من ResolvePhone → نعامله كـ "غير مسجل"
+                # لأن الأرقام النيجيرية وكثير من الدول النامية تعطي أخطاء غير متوقعة
+                # عند محاولة ResolvePhone برقم غير مسجل
+                logger.warning(f"[Phase2] {phone} → Treating unknown ResolvePhone error as NO_SESSION: {resolve_err}")
+                return {
+                    "status": "NO_SESSION",
+                    "phone": phone,
+                    "status_text": "🆕 غير مسجل"
+                }
+
+            # --- تحليل نتيجة ResolvePhone الناجحة ---
             if resolved.users:
                 return {
                     "status": "HAS_SESSION",
@@ -113,6 +174,7 @@ class SmartCheckStrategy:
                     "phone": phone,
                     "status_text": "🆕 غير مسجل"
                 }
+
         except PhoneNumberBannedError:
             return {
                 "status": "BANNED",
@@ -149,26 +211,50 @@ class SmartCheckStrategy:
             }
         except Exception as e:
             error_message = str(e)
-            if "BANNED" in error_message.upper() or "AUTH_KEY_UNREGISTERED" in error_message.upper():
+            error_upper = error_message.upper()
+
+            NO_SESSION_PATTERNS = [
+                "PHONE_NUMBER_UNOCCUPIED",
+                "NO USER IS ASSOCIATED",
+                "NO_PHONE_ASSOCIATED",
+                "PHONE_NOT_OCCUPIED",
+                "USER NOT FOUND",
+                "USER_NOT_FOUND",
+                "UNOCCUPIED",
+            ]
+            if any(p in error_upper for p in NO_SESSION_PATTERNS):
+                logger.info(f"[Phase2] {phone} → NO_SESSION (fallback): {error_message}")
+                return {
+                    "status": "NO_SESSION",
+                    "phone": phone,
+                    "status_text": "🆕 غير مسجل"
+                }
+
+            if "AUTH_KEY_UNREGISTERED" in error_upper or "AUTH_KEY_DUPLICATED" in error_upper:
                 await account_manager.disable_account(account["id"])
                 return {
                     "status": "ACCOUNT_DISABLED",
                     "phone": phone,
                     "status_text": "❌ حساب الفاحص تالف وتم تعطيله"
                 }
-            # Fallback check: if it is unoccupied / not registered
-            if "PHONE_NUMBER_UNOCCUPIED" in error_message.upper():
-                return {
-                    "status": "NO_SESSION",
-                    "phone": phone,
-                    "status_text": "🆕 غير مسجل"
-                }
-            elif "PHONE_NUMBER_BANNED" in error_message.upper() or "USER_BANNED" in error_message.upper():
+
+            if "PHONE_NUMBER_BANNED" in error_upper or "USER_BANNED" in error_upper:
                 return {
                     "status": "BANNED",
                     "phone": phone,
                     "status_text": "📵 محظور"
                 }
+
+            logger.warning(f"[Phase2] {phone} → ERROR (unhandled): {error_message}")
+            return {
+                "status": "ERROR",
+                "phone": phone,
+                "status_text": f"⚙️ خطأ من السيرفر: {error_message}"
+            }       "phone": phone,
+                    "status_text": "❌ حساب الفاحص تالف وتم تعطيله"
+                }
+
+            logger.warning(f"[Phase2] {phone} → ERROR (unhandled): {error_message}")
             return {
                 "status": "ERROR",
                 "phone": phone,
