@@ -165,12 +165,9 @@ class SmartCheckStrategy:
                 }
 
             if any(kw in error_str or kw in error_type for kw in NO_SESSION_KEYWORDS):
-                logger.info(f"[Layer 2] Keyword match: Not registered. (Phone: {phone})")
-                return {
-                    "status": "NO_SESSION",
-                    "phone": phone,
-                    "status_text": "🆕 غير مسجل"
-                }
+                # لا نحكم هنا لأن الأرقام المحظورة أحياناً تُرجع NOT_FOUND أيضاً
+                # نمرر للطبقة الثالثة للتأكد النهائي بدون إرجاع نتيجة مبكرة
+                logger.info(f"[Layer 2] Keyword 'NOT_FOUND' detected, cannot confirm yet. Passing to Layer 3 for final verification. (Phone: {phone})")
 
             if any(kw in error_str or kw in error_type for kw in BANNED_KEYWORDS):
                 logger.info(f"[Layer 2] Keyword match: Banned. (Phone: {phone})")
@@ -213,13 +210,13 @@ class SmartCheckStrategy:
                     "status_text": "⚠️ مسجل"
                 }
             else:
-                # إذا طلب إرسال SMS أو FlashCall أو MissedCall فهذا يعني أنه لا يوجد جلسة نشطة للمستخدم
-                # وبالتالي الحساب غير مسجل حالياً على تيليجرام
-                logger.info(f"[Layer 3] Code directed to SMS/Flash. Phone is Not Registered. (Phone: {phone})")
+                # SMS أو FlashCall أو MissedCall يعني الرقم مسجل على تيليجرام لكن بدون جلسة تطبيق نشطة
+                # الرقم موجود فعلاً → مسجل. الكود تم إلغاؤه فوراً أعلاه لمنع وصوله.
+                logger.info(f"[Layer 3] Code directed to SMS/Flash. Phone IS Registered (no active app session). (Phone: {phone})")
                 return {
-                    "status": "NO_SESSION",
+                    "status": "HAS_SESSION",
                     "phone": phone,
-                    "status_text": "🆕 غير مسجل"
+                    "status_text": "⚠️ مسجل"
                 }
 
         except PhoneNumberUnoccupiedError:
