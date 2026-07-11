@@ -301,6 +301,9 @@ def init_db():
             if not column_exists('telegram_accounts', 'is_active'):
                 cursor.execute("ALTER TABLE telegram_accounts ADD COLUMN is_active BOOLEAN DEFAULT TRUE")
                 conn.commit()
+            if not column_exists('telegram_accounts', 'total_checks'):
+                cursor.execute("ALTER TABLE telegram_accounts ADD COLUMN total_checks INTEGER DEFAULT 0")
+                conn.commit()
             if column_exists('telegram_accounts', 'status'):
                 try:
                     cursor.execute("ALTER TABLE telegram_accounts DROP COLUMN status")
@@ -614,7 +617,7 @@ def get_all_pending_subscriptions():
     return db_execute("SELECT user_id, plan, payment_method, amount_crypto, wallet_address, created_at FROM pending_subscriptions ORDER BY created_at DESC", commit=False, fetch='all')
 
 def get_all_checkers():
-    return db_execute("SELECT id, phone, is_active FROM telegram_accounts ORDER BY id", commit=False, fetch='all')
+    return db_execute("SELECT id, phone, is_active, total_checks FROM telegram_accounts ORDER BY id", commit=False, fetch='all')
 
 def delete_checker(account_id):
     db_execute("DELETE FROM telegram_accounts WHERE id = %s", (account_id,))

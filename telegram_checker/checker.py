@@ -319,6 +319,11 @@ class TelegramCheckEngine:
             }
 
         res = await self.strategy.check(client, phone, account)
+        if res and res.get("status") not in ["FLOOD_WAIT", "ACCOUNT_DISABLED", "ERROR"]:
+            try:
+                await flood_manager.account_used(account["id"])
+            except Exception as ue:
+                logger.error(f"Failed to increment checks count for account {account.get('id')}: {ue}")
         t_end = time.perf_counter()
         logger.info(f"End check for {phone}. Execution time: {t_end - t_start:.4f}s")
         return res

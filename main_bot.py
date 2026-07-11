@@ -432,9 +432,9 @@ async def show_checker_management(update: Update):
     else:
         text = "👥 **قائمة حسابات الفحص:**\n\nاضغط على أي حساب لتبديل حالته بين مفعل ومعطل."
         keyboard = []
-        for acc_id, phone, is_active in accounts:
+        for acc_id, phone, is_active, total_checks in accounts:
             status_emoji = "🟢" if is_active else "🔴"
-            btn_text = f"{status_emoji} - {phone}"
+            btn_text = f"{status_emoji} - {phone} (مفحوص: {total_checks})"
             keyboard.append([
                 InlineKeyboardButton(btn_text, callback_data=f"toggle_chk_{acc_id}"),
                 InlineKeyboardButton("🗑️ حذف", callback_data=f"delete_chk_{acc_id}")
