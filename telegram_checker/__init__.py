@@ -7,4 +7,3 @@ from .account_manager import AccountManager
 from .checker import TelegramChecker
 from .login_manager import LoginManager
 from .flood_manager import FloodManager
-from .queue_manager import QueueManager
