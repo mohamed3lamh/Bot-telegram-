@@ -190,17 +190,20 @@ class SmartCheckStrategy:
         country_code, proxy_tuple = await proxy_manager.get_proxy_for_phone(phone)
         proxy_client = None
         active_client = client  # الافتراضي: العميل الحالي بدون بروكسي
+        used_proxy = False
 
         if proxy_tuple is not None:
             logger.info(f"[Layer 3] Proxy found for {country_code}. Connecting via proxy...")
             try:
                 proxy_client = await telegram_client_manager.get_client(account, proxy=proxy_tuple)
                 active_client = proxy_client
+                used_proxy = True
                 logger.info(f"[Layer 3] Proxy client connected successfully for {phone}.")
             except Exception as proxy_err:
                 logger.warning(f"[Layer 3] Proxy connection failed ({proxy_err}). Falling back to direct connection.")
                 proxy_client = None
                 active_client = client
+                used_proxy = False
         else:
             if country_code:
                 logger.info(f"[Layer 3] No proxy configured for {country_code}. Using direct connection (result may be less accurate).")
@@ -211,10 +214,31 @@ class SmartCheckStrategy:
                 logger.info(f"[Layer 3] Client disconnected for {phone}. Reconnecting...")
                 await active_client.connect()
 
-            # نرسل طلب توليد كود. تيليجرام سيفحص أولاً إذا كان الرقم له حساب نشط
-            result = await active_client.send_code_request(phone)
+            try:
+                # نرسل طلب توليد كود. تيليجرام سيفحص أولاً إذا كان الرقم له حساب نشط
+                result = await active_client.send_code_request(phone)
+            except Exception as send_err:
+                # إذا فشل إرسال الطلب عبر البروكسي (بسبب انقطاع اتصاله أو تعطل البروكسي)
+                # نتراجع للاتصال المباشر فوراً لضمان إتمام الفحص
+                if used_proxy:
+                    logger.warning(f"[Layer 3] Request via proxy failed for {phone} ({send_err}). Falling back to direct connection...")
+                    if proxy_client is not None:
+                        try:
+                            await proxy_client.disconnect()
+                        except Exception:
+                            pass
+                        proxy_client = None
+                    active_client = client
+                    used_proxy = False
+                    
+                    if not active_client.is_connected():
+                        await active_client.connect()
+                    result = await active_client.send_code_request(phone)
+                else:
+                    raise send_err
+
             code_type = type(result.type)
-            logger.info(f"[Layer 3] Response code type for {phone}: {code_type.__name__} (via {'proxy:' + country_code if proxy_tuple else 'direct'})")
+            logger.info(f"[Layer 3] Response code type for {phone}: {code_type.__name__} (via {'proxy:' + country_code if used_proxy else 'direct'})")
 
             # إلغاء الكود فوراً لمنع وصوله للمستهدف
             try:
@@ -227,7 +251,7 @@ class SmartCheckStrategy:
                 logger.warning(f"[Layer 3] CancelCodeRequest failed (safe to ignore): {cancel_err}")
 
             # --- تحليل النتيجة بدقة ---
-            if proxy_tuple is not None:
+            if used_proxy:
                 # عند الاتصال عبر proxy مطابق لدولة الرقم:
                 # SentCodeTypeApp → مسجل بجلسة نشطة
                 # SentCodeTypeEmailCode → مسجل بدون جلسة (يُرسل للبريد)
