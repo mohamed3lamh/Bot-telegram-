@@ -422,6 +422,29 @@ def init_db():
                 )
             """)
             conn.commit()
+
+            # ---------- جدول البروكسيات ----------
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS proxies (
+                    id SERIAL PRIMARY KEY,
+                    country_code TEXT NOT NULL,
+                    proxy_type TEXT NOT NULL DEFAULT 'SOCKS5',
+                    host TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    username TEXT,
+                    password TEXT,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+
+            # فهرس على country_code لتسريع البحث
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_proxies_country_code
+                ON proxies (country_code, is_active)
+            """)
+            conn.commit()
         finally:
             cursor.close()
 
@@ -773,3 +796,66 @@ def get_country_settings(user_id, country_code):
     if row:
         return {"number_type": row[0] or "all", "session_status": row[1] or "all"}
     return {"number_type": "all", "session_status": "all"}
+
+
+# ==================== دوال البروكسيات ====================
+
+def add_proxy(country_code, host, port, username=None, password=None, proxy_type='SOCKS5'):
+    """إضافة بروكسي جديد لدولة معينة."""
+    db_execute("""
+        INSERT INTO proxies (country_code, proxy_type, host, port, username, password, is_active)
+        VALUES (%s, %s, %s, %s, %s, %s, TRUE)
+    """, (country_code.upper(), proxy_type.upper(), host, int(port), username, password))
+
+def get_proxy_for_country(country_code):
+    """جلب بروكسي نشط لدولة معينة (عشوائي لتوزيع الحمل)."""
+    row = db_execute("""
+        SELECT id, proxy_type, host, port, username, password
+        FROM proxies
+        WHERE country_code = %s AND is_active = TRUE
+        ORDER BY RANDOM()
+        LIMIT 1
+    """, (country_code.upper(),), commit=False, fetch='one')
+    if row:
+        return {
+            "id": row[0],
+            "proxy_type": row[1],
+            "host": row[2],
+            "port": row[3],
+            "username": row[4],
+            "password": row[5],
+            "country_code": country_code.upper()
+        }
+    return None
+
+def get_all_proxies():
+    """جلب جميع البروكسيات."""
+    rows = db_execute("""
+        SELECT id, country_code, proxy_type, host, port, username, is_active, created_at
+        FROM proxies
+        ORDER BY country_code, id
+    """, commit=False, fetch='all')
+    if not rows:
+        return []
+    return [
+        {
+            "id": r[0],
+            "country_code": r[1],
+            "proxy_type": r[2],
+            "host": r[3],
+            "port": r[4],
+            "username": r[5],
+            "is_active": r[6],
+            "created_at": r[7]
+        }
+        for r in rows
+    ]
+
+def delete_proxy(proxy_id):
+    """حذف بروكسي بالـ ID."""
+    db_execute("DELETE FROM proxies WHERE id = %s", (proxy_id,))
+
+def toggle_proxy(proxy_id, is_active):
+    """تفعيل أو تعطيل بروكسي."""
+    db_execute("UPDATE proxies SET is_active = %s WHERE id = %s", (is_active, proxy_id))
+

@@ -16,6 +16,7 @@ from telethon.tl.types.auth import (
 from .telegram_client import telegram_client_manager, SessionUnauthorizedError
 from .account_manager import account_manager
 from .flood_manager import flood_manager
+from .proxy_manager import proxy_manager
 
 logger = logging.getLogger(__name__)
 
@@ -182,17 +183,37 @@ class SmartCheckStrategy:
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
 
         # --- الطبقة الثالثة: فحص التدفق بالكود التجريبي (send_code_request) ---
-        # الملاذ الأخير والحاسم للوصول لدقة 100%
+        # يستخدم بروكسي من دولة الرقم لضمان الدقة وتجنب حماية تيليجرام المضادة للبوتات
         logger.info(f"[Layer 3: SendCode] Running send_code_request for {phone}")
+
+        # جلب البروكسي المناسب لدولة الرقم
+        country_code, proxy_tuple = await proxy_manager.get_proxy_for_phone(phone)
+        proxy_client = None
+        active_client = client  # الافتراضي: العميل الحالي بدون بروكسي
+
+        if proxy_tuple is not None:
+            logger.info(f"[Layer 3] Proxy found for {country_code}. Connecting via proxy...")
+            try:
+                proxy_client = await telegram_client_manager.get_client(account, proxy=proxy_tuple)
+                active_client = proxy_client
+                logger.info(f"[Layer 3] Proxy client connected successfully for {phone}.")
+            except Exception as proxy_err:
+                logger.warning(f"[Layer 3] Proxy connection failed ({proxy_err}). Falling back to direct connection.")
+                proxy_client = None
+                active_client = client
+        else:
+            if country_code:
+                logger.info(f"[Layer 3] No proxy configured for {country_code}. Using direct connection (result may be less accurate).")
+
         try:
             # نرسل طلب توليد كود. تيليجرام سيفحص أولاً إذا كان الرقم له حساب نشط
-            result = await client.send_code_request(phone)
+            result = await active_client.send_code_request(phone)
             code_type = type(result.type)
-            logger.info(f"[Layer 3] Response code type for {phone}: {code_type.__name__}")
+            logger.info(f"[Layer 3] Response code type for {phone}: {code_type.__name__} (via {'proxy:' + country_code if proxy_tuple else 'direct'})")
 
-            # إلغاء الكود فوراً لمنع إرسال أي SMS أو التسبب بإزعاج للمستخدم
+            # إلغاء الكود فوراً لمنع وصوله للمستهدف
             try:
-                await client(functions.auth.CancelCodeRequest(
+                await active_client(functions.auth.CancelCodeRequest(
                     phone_number=phone,
                     phone_code_hash=result.phone_code_hash
                 ))
@@ -200,24 +221,32 @@ class SmartCheckStrategy:
             except Exception as cancel_err:
                 logger.warning(f"[Layer 3] CancelCodeRequest failed (safe to ignore): {cancel_err}")
 
-            # تحليل النتيجة:
-            # إذا كان الكود مرسل لـ App أو Email فهذا يعني وجود حساب نشط ومثبت
-            if code_type in (SentCodeTypeApp, SentCodeTypeEmailCode):
-                logger.info(f"[Layer 3] Code directed to App/Email. Phone is Registered. (Phone: {phone})")
-                return {
-                    "status": "HAS_SESSION",
-                    "phone": phone,
-                    "status_text": "⚠️ مسجل"
-                }
+            # --- تحليل النتيجة بدقة ---
+            if proxy_tuple is not None:
+                # عند الاتصال عبر proxy مطابق لدولة الرقم:
+                # SentCodeTypeApp → مسجل بجلسة نشطة
+                # SentCodeTypeEmailCode → مسجل بدون جلسة (يُرسل للبريد)
+                # SentCodeTypeSms/Flash/MissedCall → مسجل بدون جلسة نشطة (يُرسل SMS)
+                # نتائج دقيقة 100% لأن الـ proxy يمنع حماية تيليجرام المضادة
+                if code_type == SentCodeTypeApp:
+                    logger.info(f"[Layer 3+Proxy] App code → Registered with active session. (Phone: {phone})")
+                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                elif code_type == SentCodeTypeEmailCode:
+                    logger.info(f"[Layer 3+Proxy] Email code → Registered (no active session). (Phone: {phone})")
+                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                else:
+                    # SMS / FlashCall / MissedCall عبر proxy = مسجل بدون جلسة تطبيق
+                    logger.info(f"[Layer 3+Proxy] SMS/Flash code → Registered (no app session). (Phone: {phone})")
+                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
             else:
-                # SMS أو FlashCall أو MissedCall يعني الرقم مسجل على تيليجرام لكن بدون جلسة تطبيق نشطة
-                # الرقم موجود فعلاً → مسجل. الكود تم إلغاؤه فوراً أعلاه لمنع وصوله.
-                logger.info(f"[Layer 3] Code directed to SMS/Flash. Phone IS Registered (no active app session). (Phone: {phone})")
-                return {
-                    "status": "HAS_SESSION",
-                    "phone": phone,
-                    "status_text": "⚠️ مسجل"
-                }
+                # بدون proxy: نثق فقط بـ SentCodeTypeApp (الأكثر موثوقية بدون proxy)
+                # باقي الأنواع قد تكون مضللة من تيليجرام → نُرجع غير مسجل
+                if code_type == SentCodeTypeApp:
+                    logger.info(f"[Layer 3] App code (direct) → Registered. (Phone: {phone})")
+                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                else:
+                    logger.info(f"[Layer 3] {code_type.__name__} (direct, no proxy) → Cannot confirm. Returning NO_SESSION. (Phone: {phone})")
+                    return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
 
         except PhoneNumberUnoccupiedError:
             logger.info(f"[Layer 3] Unoccupied error. Phone is Not Registered. (Phone: {phone})")
@@ -331,6 +360,14 @@ class SmartCheckStrategy:
                 "phone": phone,
                 "status_text": f"⚙️ خطأ نظام: {e}"
             }
+
+        finally:
+            # إغلاق عميل البروكسي المؤقت بعد انتهاء الفحص لتجنب تسرب الاتصالات
+            if proxy_client is not None:
+                try:
+                    await proxy_client.disconnect()
+                except Exception:
+                    pass
 
 
 

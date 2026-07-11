@@ -150,6 +150,25 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"❌ فشل تنفيذ الحذف. الخطأ: {e}")
             context.user_data.pop("admin_action", None)
             return
+        elif action == "add_proxy":
+            try:
+                parts = text.split(",")
+                if len(parts) >= 3:
+                    country_code = parts[0].strip().upper()
+                    host = parts[1].strip()
+                    port = int(parts[2].strip())
+                    username = parts[3].strip() if len(parts) > 3 else None
+                    password = parts[4].strip() if len(parts) > 4 else None
+                    
+                    await asyncio.to_thread(db.add_proxy, country_code, host, port, username, password)
+                    await asyncio.to_thread(db.log_activity, user_id, "إضافة بروكسي", f"دولة: {country_code} - {host}:{port}")
+                    await update.message.reply_text(f"✅ تم إضافة بروكسي للدولة `{country_code}` بنجاح ({host}:{port})")
+                else:
+                    await update.message.reply_text("❌ صيغة خاطئة. يرجى إدخال: `الدولة,IP,PORT` أو `الدولة,IP,PORT,المستخدم,الباسورد`")
+            except Exception as e:
+                await update.message.reply_text(f"❌ حدث خطأ أثناء إضافة البروكسي: {e}")
+            context.user_data.pop("admin_action", None)
+            return
 
     status_msg = await update.message.reply_text("⏳ جاري التحقق من صحة التوكن المرسل وحفظه...")
     is_valid = await bot_manager.validate_token(text)
@@ -254,6 +273,10 @@ async def show_admin_panel(update: Update):
         [
             InlineKeyboardButton("⚙️ إضافة حساب فاحص", callback_data="adm_add_checker"),
             InlineKeyboardButton("👥 إدارة الحسابات الفاحصة", callback_data="adm_manage_checkers")
+        ],
+        [
+            InlineKeyboardButton("🌐 إدارة البروكسيات", callback_data="adm_manage_proxies"),
+            InlineKeyboardButton("➕ إضافة بروكسي", callback_data="adm_add_proxy")
         ],
         [
             InlineKeyboardButton("⬅️ الواجهة الرئيسية", callback_data="main_menu")
@@ -423,6 +446,53 @@ async def prompt_edit_setting(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["editing_setting_key"] = key
     await query.message.reply_text(f"📝 أدخل القيمة الجديدة لـ {key}:")
     context.user_data["admin_action"] = "edit_setting"
+async def show_proxy_management(update: Update):
+    proxies = await asyncio.to_thread(db.get_all_proxies)
+    if not proxies:
+        text = "❌ لا توجد بروكسيات مضافة بعد."
+        keyboard = [[InlineKeyboardButton("🔙 العودة للوحة الإدارة", callback_data="admin_panel")]]
+    else:
+        text = "🌐 **قائمة البروكسيات المضافة:**\n\nاضغط على البروكسي لتغيير حالته (مفعل/معطل)."
+        keyboard = []
+        for p in proxies:
+            status_emoji = "🟢" if p["is_active"] else "🔴"
+            btn_text = f"{status_emoji} [{p['country_code']}] {p['host']}:{p['port']}"
+            keyboard.append([
+                InlineKeyboardButton(btn_text, callback_data=f"toggle_pxy_{p['id']}"),
+                InlineKeyboardButton("🗑️ حذف", callback_data=f"delete_pxy_{p['id']}")
+            ])
+        keyboard.append([InlineKeyboardButton("🔙 العودة للوحة الإدارة", callback_data="admin_panel")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if update.callback_query:
+        await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+
+async def start_add_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer()
+        user_id = query.from_user.id
+    else:
+        user_id = update.effective_user.id
+    if ADMIN_ID == 0 or user_id != ADMIN_ID:
+        return
+    msg_text = (
+        "🌐 **نظام إضافة بروكسي جديد**\n\n"
+        "أرسل بيانات البروكسي بالصيغة التالية تماماً:\n"
+        "`الدولة,host,port,username,password` (للبروكسي بكلمة مرور)\n"
+        "أو\n"
+        "`الدولة,host,port` (للبروكسي بدون كلمة مرور)\n\n"
+        "مثال:\n"
+        "`DE,123.45.67.89,1080,user123,pass456`\n"
+        "`FR,12.34.56.78,8080`"
+    )
+    context.user_data["admin_action"] = "add_proxy"
+    if query:
+        await query.message.reply_text(msg_text, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(msg_text, parse_mode="Markdown")
+
 # ---------- دوال إدارة الحسابات الفاحصة ----------
 async def show_checker_management(update: Update):
     accounts = await asyncio.to_thread(db.get_all_checkers)
@@ -583,6 +653,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif query.data.startswith("toggle_chk_"):
             await toggle_checker_callback(update, context)
+            return
+        elif query.data == "adm_manage_proxies":
+            await show_proxy_management(update)
+            return
+        elif query.data == "adm_add_proxy":
+            await start_add_proxy(update, context)
+            return
+        elif query.data.startswith("delete_pxy_"):
+            pxy_id = int(query.data.replace("delete_pxy_", ""))
+            await asyncio.to_thread(db.delete_proxy, pxy_id)
+            await query.answer("🗑️ تم حذف البروكسي بنجاح", show_alert=False)
+            await show_proxy_management(update)
+            return
+        elif query.data.startswith("toggle_pxy_"):
+            pxy_id = int(query.data.replace("toggle_pxy_", ""))
+            proxies = await asyncio.to_thread(db.get_all_proxies)
+            pxy = next((p for p in proxies if p["id"] == pxy_id), None)
+            if pxy:
+                new_status = not pxy["is_active"]
+                await asyncio.to_thread(db.toggle_proxy, pxy_id, new_status)
+                status_text = "تفعيل" if new_status else "تعطيل"
+                await query.answer(f"✅ تم {status_text} البروكسي", show_alert=True)
+            await show_proxy_management(update)
             return
         elif query.data == "adm_add_days":
             context.user_data["admin_action"] = "add_days"
