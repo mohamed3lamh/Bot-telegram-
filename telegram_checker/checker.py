@@ -262,6 +262,57 @@ class SmartCheckStrategy:
                 "status_text": "⚠️ مسجل"
             }
 
+        except PhoneMigrateError as e:
+            # الرقم مسجل في DC مختلف عن DC الفاحص الحالي → ننتقل للـ DC الصحيح ونُعيد المحاولة
+            logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Re-routing and retrying send_code... (Phone: {phone})")
+            try:
+                await telegram_client_manager.disconnect_client(account["id"])
+                client2 = await telegram_client_manager.get_client(account)
+                await client2._switch_dc(e.new_dc)
+                await asyncio.sleep(0.5)
+
+                result2 = await client2.send_code_request(phone)
+                code_type2 = type(result2.type)
+                logger.info(f"[Layer 3] After DC migration: code type = {code_type2.__name__} (Phone: {phone})")
+
+                # إلغاء الكود فوراً بعد الانتقال أيضاً
+                try:
+                    await client2(functions.auth.CancelCodeRequest(
+                        phone_number=phone,
+                        phone_code_hash=result2.phone_code_hash
+                    ))
+                    logger.info(f"[Layer 3] Cancelled code after DC migration for {phone}.")
+                except Exception as cancel_err:
+                    logger.warning(f"[Layer 3] CancelCodeRequest after migration failed (safe): {cancel_err}")
+
+                # أي نوع كود (App / Email / SMS / Flash) يُثبت أن الرقم مسجل
+                if code_type2 in (SentCodeTypeApp, SentCodeTypeEmailCode):
+                    logger.info(f"[Layer 3] After DC migration: App/Email → Registered. (Phone: {phone})")
+                else:
+                    logger.info(f"[Layer 3] After DC migration: SMS/Flash → Registered (no active app session). (Phone: {phone})")
+                return {
+                    "status": "HAS_SESSION",
+                    "phone": phone,
+                    "status_text": "⚠️ مسجل"
+                }
+
+            except PhoneNumberBannedError:
+                logger.info(f"[Layer 3] After DC migration: Phone is Banned. (Phone: {phone})")
+                return {"status": "BANNED", "phone": phone, "status_text": "📵 محظور"}
+
+            except PhoneNumberUnoccupiedError:
+                logger.info(f"[Layer 3] After DC migration: Phone is Not Registered. (Phone: {phone})")
+                return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
+
+            except FloodWaitError as fe:
+                await flood_manager.set_flood(account["id"], fe.seconds)
+                logger.warning(f"[Layer 3] FloodWait after DC migration: {fe.seconds}s. (Phone: {phone})")
+                return {"status": "FLOOD_WAIT", "seconds": fe.seconds, "phone": phone, "status_text": f"🚫 حظر مؤقت {fe.seconds} ثانية"}
+
+            except Exception as migrate_err:
+                logger.error(f"[Layer 3] DC migration failed for {phone}: {migrate_err}")
+                return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل الانتقال لـ DC {e.new_dc}"}
+
         except Exception as e:
             error_str = str(e).upper()
             logger.error(f"[Layer 3] Unexpected exception for {phone}: {e}")
