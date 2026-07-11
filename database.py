@@ -8,6 +8,10 @@ from urllib.parse import urlparse
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ==================== Thread Pool Tuning ====================
+# رفع حد خيوط بايثون لتفادي تجميد البوتات تحت حمل عالي (الافتراضي = 5 × عدد الأنوية فقط)
+os.environ.setdefault("PYTHON_THREADPOOL_WORKER_THREADS", "128")
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # ==================== Connection Pool ====================
@@ -15,8 +19,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # نحتفظ بـ Pool من الاتصالات الجاهزة (~0ms).
 _pool_lock = threading.Lock()
 _pool: list = []  # قائمة الاتصالات الجاهزة
-_POOL_SIZE = 5    # عدد الاتصالات الدائمة
-_MAX_TOTAL_CONNECTIONS = 20  # سقف صارم لإجمالي الاتصالات المفتوحة في آنٍ واحد (Pool + المستعارة حالياً)
+_POOL_SIZE = 10   # عدد الاتصالات الدائمة (مُحسَّن من 5 → 10 لتغطية حمل متعدد المستخدمين)
+_MAX_TOTAL_CONNECTIONS = 35  # سقف إجمالي الاتصالات (مُحسَّن من 20 → 35)
 _open_connections_sem = threading.Semaphore(_MAX_TOTAL_CONNECTIONS)
 
 def _db_params():
@@ -322,6 +326,20 @@ def init_db():
             """)
             conn.commit()
 
+            # ---------- فهارس الأداء (تُنشأ مرة واحدة فقط بشكل آمن) ----------
+            # تسريع ORDER BY created_at DESC في سجل العمليات
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_activity_log_created_at
+                ON activity_log (created_at DESC)
+            """)
+            conn.commit()
+            # تسريع الفلترة بالمستخدم في سجل العمليات
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_activity_log_user_id
+                ON activity_log (user_id)
+            """)
+            conn.commit()
+
             # ---------- تذاكر الدعم ----------
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS support_tickets (
@@ -334,6 +352,36 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
+            """)
+            conn.commit()
+
+            # فهارس تذاكر الدعم
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at
+                ON support_tickets (created_at DESC)
+            """)
+            conn.commit()
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_support_tickets_user_id
+                ON support_tickets (user_id)
+            """)
+            conn.commit()
+            # فهارس الحسابات الفاحصة لتسريع استعلامات الفحص
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_telegram_accounts_is_active
+                ON telegram_accounts (is_active, flood_until)
+            """)
+            conn.commit()
+            # فهارس حسابات المستخدمين لتسريع جلبها في كل دورة صيد
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_site_accounts_user_id_active
+                ON user_site_accounts (user_id, is_active)
+            """)
+            conn.commit()
+            # فهارس دول المستخدمين
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_countries_user_id
+                ON user_countries (user_id)
             """)
             conn.commit()
 

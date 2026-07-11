@@ -7,12 +7,12 @@ class AccountManager:
     def __init__(self):
         self._accounts_cache = None
         self._accounts_cache_ts = 0
-        self._ACCOUNTS_CACHE_TTL = 15  # ثانية
+        self._ACCOUNTS_CACHE_TTL = 30  # ثانية (مُحسَّن من 15 → 30 لتخفيف ضغط DB)
         self._cache_lock = asyncio.Lock()  # يمنع Cache Stampede عند تزامن أول قراءة بعد انتهاء الكاش
         self._rr_index = 0  # مؤشر Round-Robin لتوزيع الحمل بين الحسابات المتاحة
         self._rr_lock = asyncio.Lock()
         self._last_used_timestamps = {}
-        self._COOLDOWN_PERIOD = 10  # ثوانٍ فترة التبريد بين كل عملية فحص على نفس الحساب لمنع حظره مؤقتاً
+        self._COOLDOWN_PERIOD = 5  # ثوانٍ (مُحسَّن من 10 → 5 لتوزيع الحمل أسرع بين الحسابات)
 
     @staticmethod
     def _naive_utcnow():

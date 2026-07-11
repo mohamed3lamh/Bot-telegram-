@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import time
+import datetime
+import traceback
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, CallbackContext
 from telegram.request import HTTPXRequest
@@ -129,7 +131,7 @@ COUNTRY_INFO.update({
 repeat_tracker = {}
 REPEAT_TRACKER_MAX_PER_USER = 2000  # أقصى عدد أرقام يُحتفظ بها لكل مستخدم قبل تنظيف الأقدم
 
-MAX_CONCURRENT_REQUESTS = 2
+MAX_CONCURRENT_REQUESTS = 3
 # Semaphore لكل مستخدم بدل Semaphore عالمي واحد يتشاركه كل المستخدمين،
 # حتى لا يُصبح مستخدم واحد كثيف الطلبات عنق زجاجة لبقية المستخدمين على نفس السيرفر.
 _user_semaphores = {}
@@ -145,7 +147,7 @@ def _get_user_semaphore(user_id):
 _db_cache = {}          # {user_id: {"accounts": [...], "channel": ..., "countries": [...]}}
 _db_cache_ts = {}       # {user_id: timestamp آخر تحديث}
 _db_cache_locks = {}    # {user_id: asyncio.Lock} يمنع Cache Stampede عند تزامن أول قراءة بعد انتهاء الكاش
-DB_CACHE_TTL = 30       # ثانية
+DB_CACHE_TTL = 60       # ثانية (مُحسَّن من 30 → 60 لتخفيف ضغط استعلامات DB)
 
 def _get_cache_lock(user_id):
     lock = _db_cache_locks.get(user_id)
@@ -834,7 +836,6 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                 return
 
             # --- TRACE LOGS START ---
-            import datetime
             req_id = result.get("id") or result.get("order") or "N/A"
             logger.info(
                 f"\n==============================\n"
@@ -926,7 +927,6 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                         f"No checker account available for checking."
                     )
             except Exception as e:
-                import traceback
                 logger.error(
                     f"فحص الرقم {phone_number} فشل مع استثناء:\n"
                     f"Class: {e.__class__.__name__}\n"
