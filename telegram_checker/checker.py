@@ -206,6 +206,11 @@ class SmartCheckStrategy:
                 logger.info(f"[Layer 3] No proxy configured for {country_code}. Using direct connection (result may be less accurate).")
 
         try:
+            # التأكد من أن العميل متصل بنجاح قبل إرسال الطلب
+            if not active_client.is_connected():
+                logger.info(f"[Layer 3] Client disconnected for {phone}. Reconnecting...")
+                await active_client.connect()
+
             # نرسل طلب توليد كود. تيليجرام سيفحص أولاً إذا كان الرقم له حساب نشط
             result = await active_client.send_code_request(phone)
             code_type = type(result.type)
