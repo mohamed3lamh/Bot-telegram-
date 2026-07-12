@@ -8,6 +8,7 @@ from telegram.request import HTTPXRequest
 import database as db
 from bot_manager import bot_manager
 from telegram_checker.login_manager import login_manager
+from proxy_infrastructure import check_all_proxies_health
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -157,14 +158,26 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     country_code = parts[0].strip().upper()
                     host = parts[1].strip()
                     port = int(parts[2].strip())
-                    username = parts[3].strip() if len(parts) > 3 else None
-                    password = parts[4].strip() if len(parts) > 4 else None
+                    username = parts[3].strip() if len(parts) > 3 and parts[3].strip() else None
+                    password = parts[4].strip() if len(parts) > 4 and parts[4].strip() else None
+                    provider = parts[5].strip().upper() if len(parts) > 5 and parts[5].strip() else 'STATIC'
+                    rotation_url = parts[6].strip() if len(parts) > 6 and parts[6].strip() else None
                     
-                    await asyncio.to_thread(db.add_proxy, country_code, host, port, username, password)
-                    await asyncio.to_thread(db.log_activity, user_id, "إضافة بروكسي", f"دولة: {country_code} - {host}:{port}")
-                    await update.message.reply_text(f"✅ تم إضافة بروكسي للدولة `{country_code}` بنجاح ({host}:{port})")
+                    await asyncio.to_thread(
+                        db.add_proxy, 
+                        country_code, 
+                        host, 
+                        port, 
+                        username, 
+                        password, 
+                        'SOCKS5', 
+                        provider, 
+                        rotation_url
+                    )
+                    await asyncio.to_thread(db.log_activity, user_id, "إضافة بروكسي", f"دولة: {country_code} - {host}:{port} ({provider})")
+                    await update.message.reply_text(f"✅ تم إضافة بروكسي بنجاح لدولة `{country_code}` من المزود `{provider}`.")
                 else:
-                    await update.message.reply_text("❌ صيغة خاطئة. يرجى إدخال: `الدولة,IP,PORT` أو `الدولة,IP,PORT,المستخدم,الباسورد`")
+                    await update.message.reply_text("❌ صيغة خاطئة. يرجى مراجعة إرشادات الإضافة لإرسال البيانات بالصيغة المطلوبة.")
             except Exception as e:
                 await update.message.reply_text(f"❌ حدث خطأ أثناء إضافة البروكسي: {e}")
             context.user_data.pop("admin_action", None)
@@ -452,11 +465,16 @@ async def show_proxy_management(update: Update):
         text = "❌ لا توجد بروكسيات مضافة بعد."
         keyboard = [[InlineKeyboardButton("🔙 العودة للوحة الإدارة", callback_data="admin_panel")]]
     else:
-        text = "🌐 **قائمة البروكسيات المضافة:**\n\nاضغط على البروكسي لتغيير حالته (مفعل/معطل)."
+        text = "🌐 **قائمة البروكسيات وإحصائيات الجودة:**\n\nاضغط على البروكسي لتغيير حالته (مفعل/معطل)."
         keyboard = []
         for p in proxies:
             status_emoji = "🟢" if p["is_active"] else "🔴"
-            btn_text = f"{status_emoji} [{p['country_code']}] {p['host']}:{p['port']}"
+            provider = p.get("provider", "STATIC")
+            success = p.get("success_count", 0)
+            failure = p.get("failure_count", 0)
+            latency = p.get("avg_latency", 0.0)
+            
+            btn_text = f"{status_emoji} [{p['country_code']}] {p['host']}:{p['port']} ({provider}) | نجاح:{success} فشل:{failure} بنج:{latency:.2f}s"
             keyboard.append([
                 InlineKeyboardButton(btn_text, callback_data=f"toggle_pxy_{p['id']}"),
                 InlineKeyboardButton("🗑️ حذف", callback_data=f"delete_pxy_{p['id']}")
@@ -478,14 +496,17 @@ async def start_add_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID == 0 or user_id != ADMIN_ID:
         return
     msg_text = (
-        "🌐 **نظام إضافة بروكسي جديد**\n\n"
-        "أرسل بيانات البروكسي بالصيغة التالية تماماً:\n"
-        "`الدولة,host,port,username,password` (للبروكسي بكلمة مرور)\n"
+        "🌐 **نظام إضافة بروكسي متقدم**\n\n"
+        "أرسل بيانات البروكسي بإحدى الصيغ التالية تماماً:\n\n"
+        "1. بروكسي بدون كود تدوير:\n"
+        "`الدولة,host,port,username,password`\n"
         "أو\n"
-        "`الدولة,host,port` (للبروكسي بدون كلمة مرور)\n\n"
+        "`الدولة,host,port`\n\n"
+        "2. بروكسي مع اسم المزود ورابط التدوير (مثال: Webshare):\n"
+        "`الدولة,host,port,username,password,provider,rotation_url`\n\n"
         "مثال:\n"
         "`DE,123.45.67.89,1080,user123,pass456`\n"
-        "`FR,12.34.56.78,8080`"
+        "`FR,12.34.56.78,8080,user,pass,WEBSHARE,https://ipv4.webshare.io/to/rotate`"
     )
     context.user_data["admin_action"] = "add_proxy"
     if query:
@@ -1004,7 +1025,17 @@ async def main():
     await main_app.updater.start_polling()
     await main_app.start()
 
+    async def proxy_health_checker_loop():
+        await asyncio.sleep(60)  # الانتظار دقيقة عند بدء التشغيل لعدم التضارب
+        while True:
+            try:
+                await check_all_proxies_health()
+            except Exception as e:
+                logger.error(f"[BackgroundTasks] Error in proxy health checker loop: {e}")
+            await asyncio.sleep(600)  # الفحص كل 10 دقائق
+
     asyncio.create_task(safe_restore())
+    asyncio.create_task(proxy_health_checker_loop())
 
     try:
         while True:

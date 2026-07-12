@@ -445,6 +445,29 @@ def init_db():
                 ON proxies (country_code, is_active)
             """)
             conn.commit()
+
+            # ترقية جدول البروكسيات وإضافة الحقول الجديدة
+            if not column_exists('proxies', 'provider'):
+                cursor.execute("ALTER TABLE proxies ADD COLUMN provider TEXT DEFAULT 'STATIC'")
+                conn.commit()
+            if not column_exists('proxies', 'success_count'):
+                cursor.execute("ALTER TABLE proxies ADD COLUMN success_count INTEGER DEFAULT 0")
+                conn.commit()
+            if not column_exists('proxies', 'failure_count'):
+                cursor.execute("ALTER TABLE proxies ADD COLUMN failure_count INTEGER DEFAULT 0")
+                conn.commit()
+            if not column_exists('proxies', 'avg_latency'):
+                cursor.execute("ALTER TABLE proxies ADD COLUMN avg_latency REAL DEFAULT 0.0")
+                conn.commit()
+            if not column_exists('proxies', 'flood_count'):
+                cursor.execute("ALTER TABLE proxies ADD COLUMN flood_count INTEGER DEFAULT 0")
+                conn.commit()
+            if not column_exists('proxies', 'last_used'):
+                cursor.execute("ALTER TABLE proxies ADD COLUMN last_used TIMESTAMP NULL")
+                conn.commit()
+            if not column_exists('proxies', 'rotation_url'):
+                cursor.execute("ALTER TABLE proxies ADD COLUMN rotation_url TEXT NULL")
+                conn.commit()
         finally:
             cursor.close()
 
@@ -800,20 +823,20 @@ def get_country_settings(user_id, country_code):
 
 # ==================== دوال البروكسيات ====================
 
-def add_proxy(country_code, host, port, username=None, password=None, proxy_type='SOCKS5'):
+def add_proxy(country_code, host, port, username=None, password=None, proxy_type='SOCKS5', provider='STATIC', rotation_url=None):
     """إضافة بروكسي جديد لدولة معينة."""
     db_execute("""
-        INSERT INTO proxies (country_code, proxy_type, host, port, username, password, is_active)
-        VALUES (%s, %s, %s, %s, %s, %s, TRUE)
-    """, (country_code.upper(), proxy_type.upper(), host, int(port), username, password))
+        INSERT INTO proxies (country_code, proxy_type, host, port, username, password, is_active, provider, rotation_url)
+        VALUES (%s, %s, %s, %s, %s, %s, TRUE, %s, %s)
+    """, (country_code.upper(), proxy_type.upper(), host, int(port), username, password, provider.upper(), rotation_url))
 
 def get_proxy_for_country(country_code):
-    """جلب بروكسي نشط لدولة معينة (عشوائي لتوزيع الحمل)."""
+    """جلب بروكسي نشط لدولة معينة (مُرتّب حسب الأعلى تقييماً لتفادي التالف)."""
     row = db_execute("""
-        SELECT id, proxy_type, host, port, username, password
+        SELECT id, proxy_type, host, port, username, password, provider, rotation_url
         FROM proxies
         WHERE country_code = %s AND is_active = TRUE
-        ORDER BY RANDOM()
+        ORDER BY (success_count / COALESCE(NULLIF(success_count + failure_count, 0), 1.0)) DESC, success_count DESC
         LIMIT 1
     """, (country_code.upper(),), commit=False, fetch='one')
     if row:
@@ -824,14 +847,16 @@ def get_proxy_for_country(country_code):
             "port": row[3],
             "username": row[4],
             "password": row[5],
+            "provider": row[6],
+            "rotation_url": row[7],
             "country_code": country_code.upper()
         }
     return None
 
 def get_all_proxies():
-    """جلب جميع البروكسيات."""
+    """جلب جميع البروكسيات مع الإحصائيات."""
     rows = db_execute("""
-        SELECT id, country_code, proxy_type, host, port, username, is_active, created_at
+        SELECT id, country_code, proxy_type, host, port, username, is_active, created_at, provider, success_count, failure_count, avg_latency
         FROM proxies
         ORDER BY country_code, id
     """, commit=False, fetch='all')
@@ -846,10 +871,34 @@ def get_all_proxies():
             "port": r[4],
             "username": r[5],
             "is_active": r[6],
-            "created_at": r[7]
+            "created_at": r[7],
+            "provider": r[8],
+            "success_count": r[9],
+            "failure_count": r[10],
+            "avg_latency": r[11]
         }
         for r in rows
     ]
+
+def update_proxy_stats(proxy_id, is_success, latency=0.0, is_flood=False):
+    """تحديث إحصائيات البروكسي."""
+    if is_success:
+        db_execute("""
+            UPDATE proxies 
+            SET success_count = success_count + 1, 
+                avg_latency = (avg_latency * 0.9) + (%s * 0.1),
+                last_used = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (float(latency), proxy_id))
+    else:
+        flood_increment = 1 if is_flood else 0
+        db_execute("""
+            UPDATE proxies 
+            SET failure_count = failure_count + 1,
+                flood_count = flood_count + %s,
+                last_used = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (flood_increment, proxy_id))
 
 def delete_proxy(proxy_id):
     """حذف بروكسي بالـ ID."""

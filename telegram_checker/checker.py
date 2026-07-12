@@ -16,7 +16,7 @@ from telethon.tl.types.auth import (
 from .telegram_client import telegram_client_manager, SessionUnauthorizedError
 from .account_manager import account_manager
 from .flood_manager import flood_manager
-from .proxy_manager import proxy_manager
+from proxy_infrastructure import proxy_manager
 
 logger = logging.getLogger(__name__)
 
@@ -186,14 +186,14 @@ class SmartCheckStrategy:
         # يستخدم بروكسي من دولة الرقم لضمان الدقة وتجنب حماية تيليجرام المضادة للبوتات
         logger.info(f"[Layer 3: SendCode] Running send_code_request for {phone}")
 
-        # جلب البروكسي المناسب لدولة الرقم
-        country_code, proxy_tuple = await proxy_manager.get_proxy_for_phone(phone)
+        session_id = f"check_{phone}_{int(time.time())}"
+        proxy_tuple = await proxy_manager.get_proxy_for_telegram(phone, session_id)
         proxy_client = None
         active_client = client  # الافتراضي: العميل الحالي بدون بروكسي
         used_proxy = False
 
         if proxy_tuple is not None:
-            logger.info(f"[Layer 3] Proxy found for {country_code}. Connecting via proxy...")
+            logger.info(f"[Layer 3] Proxy found. Connecting via proxy...")
             try:
                 proxy_client = await telegram_client_manager.get_client(account, proxy=proxy_tuple)
                 active_client = proxy_client
@@ -205,9 +205,10 @@ class SmartCheckStrategy:
                 active_client = client
                 used_proxy = False
         else:
-            if country_code:
-                logger.info(f"[Layer 3] No proxy configured for {country_code}. Using direct connection (result may be less accurate).")
+            logger.info(f"[Layer 3] No proxy found or available. Using direct connection.")
 
+        is_success = False
+        is_flood = False
         try:
             # التأكد من أن العميل متصل بنجاح قبل إرسال الطلب
             if not active_client.is_connected():
@@ -219,26 +220,46 @@ class SmartCheckStrategy:
                 result = await active_client.send_code_request(phone)
             except Exception as send_err:
                 # إذا فشل إرسال الطلب عبر البروكسي (بسبب انقطاع اتصاله أو تعطل البروكسي)
-                # نتراجع للاتصال المباشر فوراً لضمان إتمام الفحص
+                # نحاول عمل Rotation للبروكسي إذا كان مدعوماً
                 if used_proxy:
-                    logger.warning(f"[Layer 3] Request via proxy failed for {phone} ({send_err}). Falling back to direct connection...")
-                    if proxy_client is not None:
+                    logger.warning(f"[Layer 3] Request via proxy failed for {phone} ({send_err}). Trying IP rotation...")
+                    rotated = await proxy_manager.trigger_rotation(session_id)
+                    if rotated:
+                        # إعادة إنشاء العميل بالبروكسي الجديد ومحاولة الاتصال مرة أخرى
                         try:
-                            await proxy_client.disconnect()
-                        except Exception:
-                            pass
-                        proxy_client = None
-                    active_client = client
-                    used_proxy = False
-                    
-                    if not active_client.is_connected():
-                        await active_client.connect()
-                    result = await active_client.send_code_request(phone)
+                            if proxy_client is not None:
+                                await proxy_client.disconnect()
+                            proxy_client = await telegram_client_manager.get_client(account, proxy=proxy_tuple)
+                            active_client = proxy_client
+                            if not active_client.is_connected():
+                                await active_client.connect()
+                            result = await active_client.send_code_request(phone)
+                            logger.info(f"[Layer 3] Request succeeded after proxy IP rotation.")
+                        except Exception as retry_err:
+                            logger.warning(f"[Layer 3] Retry after proxy rotation failed: {retry_err}. Falling back to direct.")
+                            used_proxy = False
+                            active_client = client
+                            if not active_client.is_connected():
+                                await active_client.connect()
+                            result = await active_client.send_code_request(phone)
+                    else:
+                        logger.warning(f"[Layer 3] Rotation not supported or failed. Falling back to direct connection...")
+                        if proxy_client is not None:
+                            try:
+                                await proxy_client.disconnect()
+                            except Exception:
+                                pass
+                            proxy_client = None
+                        active_client = client
+                        used_proxy = False
+                        if not active_client.is_connected():
+                            await active_client.connect()
+                        result = await active_client.send_code_request(phone)
                 else:
                     raise send_err
 
             code_type = type(result.type)
-            logger.info(f"[Layer 3] Response code type for {phone}: {code_type.__name__} (via {'proxy:' + country_code if used_proxy else 'direct'})")
+            logger.info(f"[Layer 3] Response code type for {phone}: {code_type.__name__} (via {'proxy' if used_proxy else 'direct'})")
 
             # إلغاء الكود فوراً لمنع وصوله للمستهدف
             try:
@@ -250,6 +271,7 @@ class SmartCheckStrategy:
             except Exception as cancel_err:
                 logger.warning(f"[Layer 3] CancelCodeRequest failed (safe to ignore): {cancel_err}")
 
+            is_success = True
             # --- تحليل النتيجة بدقة ---
             if used_proxy:
                 # عند الاتصال عبر proxy مطابق لدولة الرقم:
@@ -279,6 +301,7 @@ class SmartCheckStrategy:
 
         except PhoneNumberUnoccupiedError:
             logger.info(f"[Layer 3] Unoccupied error. Phone is Not Registered. (Phone: {phone})")
+            is_success = True
             return {
                 "status": "NO_SESSION",
                 "phone": phone,
@@ -287,6 +310,7 @@ class SmartCheckStrategy:
 
         except PhoneNumberBannedError:
             logger.info(f"[Layer 3] Banned error. Phone is Banned. (Phone: {phone})")
+            is_success = True
             return {
                 "status": "BANNED",
                 "phone": phone,
@@ -295,6 +319,7 @@ class SmartCheckStrategy:
 
         except PhoneNumberInvalidError:
             logger.info(f"[Layer 3] Invalid phone. Phone is Not Registered. (Phone: {phone})")
+            is_success = True
             return {
                 "status": "NO_SESSION",
                 "phone": phone,
@@ -304,6 +329,7 @@ class SmartCheckStrategy:
         except FloodWaitError as e:
             await flood_manager.set_flood(account["id"], e.seconds)
             logger.warning(f"[Layer 3] FloodWait: {e.seconds} seconds on checker.")
+            is_flood = True
             return {
                 "status": "FLOOD_WAIT",
                 "seconds": e.seconds,
@@ -314,6 +340,7 @@ class SmartCheckStrategy:
         except SessionPasswordNeededError:
             # إذا طلب الباسورد، فهذا يعني أن الحساب موجود ومحمي بالتحقق بخطوتين -> مسجل قطعا
             logger.info(f"[Layer 3] Session password needed! Phone is Registered. (Phone: {phone})")
+            is_success = True
             return {
                 "status": "HAS_SESSION",
                 "phone": phone,
@@ -343,6 +370,7 @@ class SmartCheckStrategy:
                 except Exception as cancel_err:
                     logger.warning(f"[Layer 3] CancelCodeRequest after migration failed (safe): {cancel_err}")
 
+                is_success = True
                 # أي نوع كود (App / Email / SMS / Flash) يُثبت أن الرقم مسجل
                 if code_type2 in (SentCodeTypeApp, SentCodeTypeEmailCode):
                     logger.info(f"[Layer 3] After DC migration: App/Email → Registered. (Phone: {phone})")
@@ -356,15 +384,18 @@ class SmartCheckStrategy:
 
             except PhoneNumberBannedError:
                 logger.info(f"[Layer 3] After DC migration: Phone is Banned. (Phone: {phone})")
+                is_success = True
                 return {"status": "BANNED", "phone": phone, "status_text": "📵 محظور"}
 
             except PhoneNumberUnoccupiedError:
                 logger.info(f"[Layer 3] After DC migration: Phone is Not Registered. (Phone: {phone})")
+                is_success = True
                 return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
 
             except FloodWaitError as fe:
                 await flood_manager.set_flood(account["id"], fe.seconds)
                 logger.warning(f"[Layer 3] FloodWait after DC migration: {fe.seconds}s. (Phone: {phone})")
+                is_flood = True
                 return {"status": "FLOOD_WAIT", "seconds": fe.seconds, "phone": phone, "status_text": f"🚫 حظر مؤقت {fe.seconds} ثانية"}
 
             except Exception as migrate_err:
@@ -376,8 +407,10 @@ class SmartCheckStrategy:
             logger.error(f"[Layer 3] Unexpected exception for {phone}: {e}")
             
             if any(kw in error_str for kw in ["UNOCCUPIED", "NO USER", "NOT FOUND", "NOT_FOUND"]):
+                is_success = True
                 return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
             if "BANNED" in error_str:
+                is_success = True
                 return {"status": "BANNED", "phone": phone, "status_text": "📵 محظور"}
             if "AUTH_KEY" in error_str:
                 await account_manager.disable_account(account["id"])
@@ -391,6 +424,9 @@ class SmartCheckStrategy:
             }
 
         finally:
+            # تحرير البروكسي وإرسال إحصائيات الجودة
+            await proxy_manager.release_proxy(session_id, is_success, is_flood)
+
             # إغلاق عميل البروكسي المؤقت بعد انتهاء الفحص لتجنب تسرب الاتصالات
             if proxy_client is not None:
                 try:
