@@ -30,9 +30,9 @@ class LoginManager:
             StringSession(), 
             int(api_id), 
             api_hash,
-            device_model="Samsung Galaxy S23 Ultra",
-            system_version="Android 14.0",
-            app_version="10.14.5",
+            device_model="Samsung Galaxy S21",
+            system_version="Android 12.0",
+            app_version="0.26.2.1660",
             lang_code="ar",
             system_lang_code="ar"
         )

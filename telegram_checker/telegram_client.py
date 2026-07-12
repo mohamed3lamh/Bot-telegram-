@@ -65,7 +65,12 @@ class TelegramClientManager:
             client = TelegramClient(
                 StringSession(account["session"]),
                 int(account["api_id"]),
-                account["api_hash"]
+                account["api_hash"],
+                device_model="Samsung Galaxy S21",
+                system_version="Android 12.0",
+                app_version="0.26.2.1660",
+                lang_code="ar",
+                system_lang_code="ar"
             )
 
             await client.connect()
@@ -88,7 +93,12 @@ class TelegramClientManager:
             StringSession(account["session"]),
             int(account["api_id"]),
             account["api_hash"],
-            proxy=proxy
+            proxy=proxy,
+            device_model="Samsung Galaxy S21",
+            system_version="Android 12.0",
+            app_version="0.26.2.1660",
+            lang_code="ar",
+            system_lang_code="ar"
         )
 
         await client.connect()
