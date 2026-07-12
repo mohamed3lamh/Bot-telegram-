@@ -26,7 +26,16 @@ class LoginManager:
         # تنظيف أي عملية سابقة لنفس الرقم
         await self._cleanup_phone(phone)
 
-        client = TelegramClient(StringSession(), int(api_id), api_hash)
+        client = TelegramClient(
+            StringSession(), 
+            int(api_id), 
+            api_hash,
+            device_model="Samsung Galaxy S23 Ultra",
+            system_version="Android 14.0",
+            app_version="10.14.5",
+            lang_code="ar",
+            system_lang_code="ar"
+        )
         await client.connect()
         try:
             result = await client.send_code_request(phone)
