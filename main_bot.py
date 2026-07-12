@@ -521,15 +521,19 @@ async def show_checker_management(update: Update):
         text = "❌ لا توجد حسابات فحص مضافة بعد."
         keyboard = [[InlineKeyboardButton("🔙 العودة للوحة الإدارة", callback_data="admin_panel")]]
     else:
-        text = "👥 **قائمة حسابات الفحص:**\n\nاضغط على أي حساب لتبديل حالته بين مفعل ومعطل."
+        text = "👥 **قائمة حسابات الفحص وإحصائياتها:**\n\n"
         keyboard = []
         for acc_id, phone, is_active, total_checks in accounts:
-            status_emoji = "🟢" if is_active else "🔴"
-            btn_text = f"{status_emoji} - {phone} (مفحوص: {total_checks})"
+            status_emoji = "🟢 مفعل" if is_active else "🔴 معطل"
+            text += f"▪️ `{phone}` ➜ {status_emoji} | (مفحوص: `{total_checks}`)\n"
+            
+            btn_emoji = "🟢" if is_active else "🔴"
+            btn_text = f"{btn_emoji} {phone}"
             keyboard.append([
                 InlineKeyboardButton(btn_text, callback_data=f"toggle_chk_{acc_id}"),
                 InlineKeyboardButton("🗑️ حذف", callback_data=f"delete_chk_{acc_id}")
             ])
+        text += "\nاضغط على زر الحساب أدناه لتبديل حالته بين تفعيل وتعطيل."
         keyboard.append([InlineKeyboardButton("🔙 العودة للوحة الإدارة", callback_data="admin_panel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
