@@ -8,7 +8,7 @@ from telethon import functions, types
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
     SessionPasswordNeededError, PhoneNumberInvalidError,
-    PhoneNumberUnoccupiedError, PhoneMigrateError
+    PhoneNumberUnoccupiedError, PhoneMigrateError, PhoneCodeInvalidError
 )
 from telethon.tl.types.auth import (
     SentCodeTypeApp, SentCodeTypeSms, SentCodeTypeFlashCall, SentCodeTypeMissedCall, SentCodeTypeEmailCode
