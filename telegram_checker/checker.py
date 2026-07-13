@@ -32,6 +32,9 @@ class SmartCheckStrategy:
     3. الطبقة الثالثة: فحص التدفق بالكود التجريبي (send_code_request) - الملاذ الأخير الحاسم لتحديد وجود التطبيق (App vs SMS) مع إلغاء الكود فوراً وبشكل حاسم لتجنب إرسال أي رسالة للمستهدف.
     """
     async def check(self, client, phone, account):
+        # تجميع نتائج الطبقات لضمان عدم حدوث تضارب في النتيجة النهائية
+        layer_results = {}
+
         # --- الطبقة الأولى: الاستيراد الصامت (Silent Import) ---
         logger.info(f"[Layer 1: Import] Silent Contact Import check for {phone}")
         try:
@@ -46,13 +49,13 @@ class SmartCheckStrategy:
                 user_id = import_res.users[0].id
                 await client(functions.contacts.DeleteContactsRequest(id=[user_id]))
                 logger.info(f"[Layer 1] User found directly! Registered. (Phone: {phone})")
-                # تم إزالة الإرجاع المبكر للوصول للطبقة الثالثة
+                layer_results["layer1"] = "HAS_SESSION"
             
             elif import_res.imported:
                 imported_user_id = import_res.imported[0].user_id
                 await client(functions.contacts.DeleteContactsRequest(id=[imported_user_id]))
                 logger.info(f"[Layer 1] Contact imported! Registered. (Phone: {phone})")
-                # تم إزالة الإرجاع المبكر للوصول للطبقة الثالثة
+                layer_results["layer1"] = "HAS_SESSION"
 
         except PhoneMigrateError as e:
             # معالجة فورية لانتقال مركز البيانات
@@ -88,18 +91,18 @@ class SmartCheckStrategy:
             resolved = await client(functions.contacts.ResolvePhoneRequest(phone=phone))
             if resolved.users:
                 logger.info(f"[Layer 2] User resolved successfully! Registered. (Phone: {phone})")
-                # تم إزالة الإرجاع المبكر للوصول للطبقة الثالثة
+                layer_results["layer2"] = "HAS_SESSION"
             else:
                 logger.info(f"[Layer 2] ResolvePhone returned empty user. Moving to Layer 3...")
 
         except UserPrivacyRestrictedError:
             # مستخدم مسجل ولكن قام بتشديد إعدادات الخصوصية (دليل قاطع على وجود الحساب!)
             logger.info(f"[Layer 2] Privacy Restricted! Phone is Registered but hidden. (Phone: {phone})")
-            # تم إزالة الإرجاع المبكر
+            layer_results["layer2"] = "HAS_SESSION"
 
         except PhoneNumberUnoccupiedError:
             logger.info(f"[Layer 2] Phone unoccupied. Not registered. (Phone: {phone})")
-            # تم إزالة الإرجاع المبكر
+            layer_results["layer2"] = "NO_SESSION"
 
         except PhoneNumberBannedError:
             logger.info(f"[Layer 2] Phone is banned. (Phone: {phone})")
@@ -134,11 +137,11 @@ class SmartCheckStrategy:
 
             if any(kw in error_str or kw in error_type for kw in PRIVACY_KEYWORDS):
                 logger.info(f"[Layer 2] Privacy error detected. Phone is Registered. (Phone: {phone})")
-                # تم إزالة الإرجاع المبكر
+                layer_results["layer2"] = "HAS_SESSION"
 
             elif any(kw in error_str or kw in error_type for kw in NO_SESSION_KEYWORDS):
                 logger.info(f"[Layer 2] Keyword 'NOT_FOUND' detected. (Phone: {phone})")
-                # تم إزالة الإرجاع المبكر
+                layer_results["layer2"] = "NO_SESSION"
 
             elif any(kw in error_str or kw in error_type for kw in BANNED_KEYWORDS):
                 logger.info(f"[Layer 2] Keyword match: Banned. (Phone: {phone})")
@@ -284,9 +287,13 @@ class SmartCheckStrategy:
                     return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
             else:
                 # بدون proxy: بما أن خوادم تيليجرام تخدع الفاحص وتعيد SentCodeTypeApp دائماً،
-                # سنعتبر أن الرقم غير مسجل إذا وصل إلى هنا لأن الطبقة الثانية كانت ستصطاده لو كان مسجلاً.
-                logger.info(f"[Layer 3] Direct connection returned code. Assuming NO_SESSION to prevent false positives. (Phone: {phone})")
-                return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
+                # سنقوم بمراجعة نتائج الطبقة الأولى والثانية بدلاً من الافتراض الأعمى أنه غير مسجل.
+                if layer_results.get("layer1") == "HAS_SESSION" or layer_results.get("layer2") == "HAS_SESSION":
+                    logger.info(f"[Layer 3] Direct connection returned code, but Layer 1/2 confirmed it's registered. Returning HAS_SESSION. (Phone: {phone})")
+                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                else:
+                    logger.info(f"[Layer 3] Direct connection returned code, and previous layers didn't find it. Assuming NO_SESSION. (Phone: {phone})")
+                    return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
 
         except PhoneNumberUnoccupiedError:
             logger.info(f"[Layer 3] Unoccupied error. Phone is Not Registered. (Phone: {phone})")
