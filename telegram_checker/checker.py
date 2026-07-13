@@ -282,6 +282,7 @@ class SmartCheckStrategy:
             logger.info(f"[Layer 3] Response code type for {phone}: {code_type.__name__} (via {'proxy' if used_proxy else 'direct'})")
 
             # --- محاولة دخول وهمية لكشف الحقيقة المطلقة بدون بروكسي (Fake SignIn) ---
+            is_definitely_registered = False
             try:
                 await active_client.sign_in(phone=phone, code='12345', phone_code_hash=result.phone_code_hash)
             except PhoneNumberUnoccupiedError:
@@ -290,6 +291,7 @@ class SmartCheckStrategy:
                 return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
             except (PhoneCodeInvalidError, SessionPasswordNeededError):
                 logger.info(f"[Layer 3] Fake SignIn revealed: REGISTERED! (Phone: {phone})")
+                is_definitely_registered = True
             except Exception as e:
                 pass
 
@@ -304,6 +306,10 @@ class SmartCheckStrategy:
                 logger.warning(f"[Layer 3] CancelCodeRequest failed (safe to ignore): {cancel_err}")
 
             is_success = True
+
+            if is_definitely_registered:
+                return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+
             # --- تحليل النتيجة بدقة ---
             if used_proxy:
                 # عند الاتصال عبر proxy مطابق لدولة الرقم:
@@ -398,6 +404,7 @@ class SmartCheckStrategy:
                 logger.info(f"[Layer 3] After DC migration: code type = {code_type2.__name__} (Phone: {phone})")
 
                 # --- محاولة دخول وهمية بعد الانتقال ---
+                is_definitely_registered = False
                 try:
                     await client2.sign_in(phone=phone, code='12345', phone_code_hash=result2.phone_code_hash)
                 except PhoneNumberUnoccupiedError:
@@ -406,6 +413,7 @@ class SmartCheckStrategy:
                     return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
                 except (PhoneCodeInvalidError, SessionPasswordNeededError):
                     logger.info(f"[Layer 3] Fake SignIn after DC migration revealed: REGISTERED! (Phone: {phone})")
+                    is_definitely_registered = True
                 except Exception as e:
                     pass
 
@@ -420,6 +428,10 @@ class SmartCheckStrategy:
                     logger.warning(f"[Layer 3] CancelCodeRequest after migration failed (safe): {cancel_err}")
 
                 is_success = True
+                
+                if is_definitely_registered:
+                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+
                 # أي نوع كود (App / Email / SMS / Flash) يُثبت أن الرقم مسجل
                 if code_type2 in (SentCodeTypeApp, SentCodeTypeEmailCode):
                     logger.info(f"[Layer 3] After DC migration: App/Email → Registered. (Phone: {phone})")
