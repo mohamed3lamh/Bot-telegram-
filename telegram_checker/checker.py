@@ -166,9 +166,12 @@ class SmartCheckStrategy:
                 }
 
             if any(kw in error_str or kw in error_type for kw in NO_SESSION_KEYWORDS):
-                # لا نحكم هنا لأن الأرقام المحظورة أحياناً تُرجع NOT_FOUND أيضاً
-                # نمرر للطبقة الثالثة للتأكد النهائي بدون إرجاع نتيجة مبكرة
-                logger.info(f"[Layer 2] Keyword 'NOT_FOUND' detected, cannot confirm yet. Passing to Layer 3 for final verification. (Phone: {phone})")
+                logger.info(f"[Layer 2] Keyword 'NOT_FOUND' detected, returning NO_SESSION. (Phone: {phone})")
+                return {
+                    "status": "NO_SESSION",
+                    "phone": phone,
+                    "status_text": "🆕 غير مسجل"
+                }
 
             if any(kw in error_str or kw in error_type for kw in BANNED_KEYWORDS):
                 logger.info(f"[Layer 2] Keyword match: Banned. (Phone: {phone})")
@@ -281,19 +284,7 @@ class SmartCheckStrategy:
             code_type = type(result.type)
             logger.info(f"[Layer 3] Response code type for {phone}: {code_type.__name__} (via {'proxy' if used_proxy else 'direct'})")
 
-            # --- محاولة دخول وهمية لكشف الحقيقة المطلقة بدون بروكسي (Fake SignIn) ---
-            is_definitely_registered = False
-            try:
-                await active_client.sign_in(phone=phone, code='12345', phone_code_hash=result.phone_code_hash)
-            except PhoneNumberUnoccupiedError:
-                logger.info(f"[Layer 3] Fake SignIn revealed: UNOCCUPIED! (Phone: {phone})")
-                is_success = True
-                return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
-            except (PhoneCodeInvalidError, SessionPasswordNeededError):
-                logger.info(f"[Layer 3] Fake SignIn revealed: REGISTERED! (Phone: {phone})")
-                is_definitely_registered = True
-            except Exception as e:
-                pass
+
 
             # إلغاء الكود فوراً لمنع وصوله للمستهدف
             try:
@@ -306,9 +297,6 @@ class SmartCheckStrategy:
                 logger.warning(f"[Layer 3] CancelCodeRequest failed (safe to ignore): {cancel_err}")
 
             is_success = True
-
-            if is_definitely_registered:
-                return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
 
             # --- تحليل النتيجة بدقة ---
             if used_proxy:
@@ -328,14 +316,10 @@ class SmartCheckStrategy:
                     logger.info(f"[Layer 3+Proxy] SMS/Flash code → Registered (no app session). (Phone: {phone})")
                     return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
             else:
-                # بدون proxy: نثق فقط بـ SentCodeTypeApp (الأكثر موثوقية بدون proxy)
-                # باقي الأنواع قد تكون مضللة من تيليجرام → نُرجع غير مسجل
-                if code_type == SentCodeTypeApp:
-                    logger.info(f"[Layer 3] App code (direct) → Registered. (Phone: {phone})")
-                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
-                else:
-                    logger.info(f"[Layer 3] {code_type.__name__} (direct, no proxy) → Cannot confirm. Returning NO_SESSION. (Phone: {phone})")
-                    return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
+                # بدون proxy: بما أن خوادم تيليجرام تخدع الفاحص وتعيد SentCodeTypeApp دائماً،
+                # سنعتبر أن الرقم غير مسجل إذا وصل إلى هنا لأن الطبقة الثانية كانت ستصطاده لو كان مسجلاً.
+                logger.info(f"[Layer 3] Direct connection returned code. Assuming NO_SESSION to prevent false positives. (Phone: {phone})")
+                return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
 
         except PhoneNumberUnoccupiedError:
             logger.info(f"[Layer 3] Unoccupied error. Phone is Not Registered. (Phone: {phone})")
@@ -403,19 +387,7 @@ class SmartCheckStrategy:
                 code_type2 = type(result2.type)
                 logger.info(f"[Layer 3] After DC migration: code type = {code_type2.__name__} (Phone: {phone})")
 
-                # --- محاولة دخول وهمية بعد الانتقال ---
-                is_definitely_registered = False
-                try:
-                    await client2.sign_in(phone=phone, code='12345', phone_code_hash=result2.phone_code_hash)
-                except PhoneNumberUnoccupiedError:
-                    logger.info(f"[Layer 3] Fake SignIn after DC migration revealed: UNOCCUPIED! (Phone: {phone})")
-                    is_success = True
-                    return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
-                except (PhoneCodeInvalidError, SessionPasswordNeededError):
-                    logger.info(f"[Layer 3] Fake SignIn after DC migration revealed: REGISTERED! (Phone: {phone})")
-                    is_definitely_registered = True
-                except Exception as e:
-                    pass
+
 
                 # إلغاء الكود فوراً بعد الانتقال أيضاً
                 try:
@@ -429,9 +401,6 @@ class SmartCheckStrategy:
 
                 is_success = True
                 
-                if is_definitely_registered:
-                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
-
                 # أي نوع كود (App / Email / SMS / Flash) يُثبت أن الرقم مسجل
                 if code_type2 in (SentCodeTypeApp, SentCodeTypeEmailCode):
                     logger.info(f"[Layer 3] After DC migration: App/Email → Registered. (Phone: {phone})")
