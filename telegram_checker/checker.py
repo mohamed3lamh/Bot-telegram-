@@ -281,6 +281,18 @@ class SmartCheckStrategy:
             code_type = type(result.type)
             logger.info(f"[Layer 3] Response code type for {phone}: {code_type.__name__} (via {'proxy' if used_proxy else 'direct'})")
 
+            # --- محاولة دخول وهمية لكشف الحقيقة المطلقة بدون بروكسي (Fake SignIn) ---
+            try:
+                await active_client.sign_in(phone=phone, code='12345', phone_code_hash=result.phone_code_hash)
+            except PhoneNumberUnoccupiedError:
+                logger.info(f"[Layer 3] Fake SignIn revealed: UNOCCUPIED! (Phone: {phone})")
+                is_success = True
+                return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
+            except (PhoneCodeInvalidError, SessionPasswordNeededError):
+                logger.info(f"[Layer 3] Fake SignIn revealed: REGISTERED! (Phone: {phone})")
+            except Exception as e:
+                pass
+
             # إلغاء الكود فوراً لمنع وصوله للمستهدف
             try:
                 await active_client(functions.auth.CancelCodeRequest(
@@ -384,6 +396,18 @@ class SmartCheckStrategy:
                 ))
                 code_type2 = type(result2.type)
                 logger.info(f"[Layer 3] After DC migration: code type = {code_type2.__name__} (Phone: {phone})")
+
+                # --- محاولة دخول وهمية بعد الانتقال ---
+                try:
+                    await client2.sign_in(phone=phone, code='12345', phone_code_hash=result2.phone_code_hash)
+                except PhoneNumberUnoccupiedError:
+                    logger.info(f"[Layer 3] Fake SignIn after DC migration revealed: UNOCCUPIED! (Phone: {phone})")
+                    is_success = True
+                    return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
+                except (PhoneCodeInvalidError, SessionPasswordNeededError):
+                    logger.info(f"[Layer 3] Fake SignIn after DC migration revealed: REGISTERED! (Phone: {phone})")
+                except Exception as e:
+                    pass
 
                 # إلغاء الكود فوراً بعد الانتقال أيضاً
                 try:
