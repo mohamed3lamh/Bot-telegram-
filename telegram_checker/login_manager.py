@@ -49,11 +49,16 @@ class LoginManager:
                 if timeout_val and timeout_val > 0:
                     await asyncio.sleep(timeout_val + 2)
                 
-                sms_result = await client(ResendCodeRequest(
-                    phone_number=phone,
-                    phone_code_hash=result.phone_code_hash
-                ))
-                result = sms_result
+                try:
+                    sms_result = await client(ResendCodeRequest(
+                        phone_number=phone,
+                        phone_code_hash=result.phone_code_hash
+                    ))
+                    result = sms_result
+                except Exception as e:
+                    # إذا فشل طلب إعادة الإرسال (مثلاً تيليجرام يرفض إرسال SMS لهذا الرقم)، نتجاهل الخطأ 
+                    # ونعتمد على النتيجة الأصلية (الإرسال للتطبيق) حتى لا تفشل العملية بالكامل.
+                    print(f"Failed to resend code via SMS: {e}")
         except FloodWaitError:
             await client.disconnect()
             raise
