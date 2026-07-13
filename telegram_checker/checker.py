@@ -46,21 +46,13 @@ class SmartCheckStrategy:
                 user_id = import_res.users[0].id
                 await client(functions.contacts.DeleteContactsRequest(id=[user_id]))
                 logger.info(f"[Layer 1] User found directly! Registered. (Phone: {phone})")
-                return {
-                    "status": "HAS_SESSION",
-                    "phone": phone,
-                    "status_text": "⚠️ مسجل"
-                }
+                # تم إزالة الإرجاع المبكر للوصول للطبقة الثالثة
             
-            if import_res.imported:
+            elif import_res.imported:
                 imported_user_id = import_res.imported[0].user_id
                 await client(functions.contacts.DeleteContactsRequest(id=[imported_user_id]))
                 logger.info(f"[Layer 1] Contact imported! Registered. (Phone: {phone})")
-                return {
-                    "status": "HAS_SESSION",
-                    "phone": phone,
-                    "status_text": "⚠️ مسجل"
-                }
+                # تم إزالة الإرجاع المبكر للوصول للطبقة الثالثة
 
         except PhoneMigrateError as e:
             # معالجة فورية لانتقال مركز البيانات
@@ -96,31 +88,18 @@ class SmartCheckStrategy:
             resolved = await client(functions.contacts.ResolvePhoneRequest(phone=phone))
             if resolved.users:
                 logger.info(f"[Layer 2] User resolved successfully! Registered. (Phone: {phone})")
-                return {
-                    "status": "HAS_SESSION",
-                    "phone": phone,
-                    "status_text": "⚠️ مسجل"
-                }
-            
-            # إذا نجح الطلب ولكن لم يرجع مستخدمين، ننتقل للطبقة الثالثة للتحقق المطلق
-            logger.info(f"[Layer 2] ResolvePhone returned empty user. Moving to Layer 3...")
+                # تم إزالة الإرجاع المبكر للوصول للطبقة الثالثة
+            else:
+                logger.info(f"[Layer 2] ResolvePhone returned empty user. Moving to Layer 3...")
 
         except UserPrivacyRestrictedError:
             # مستخدم مسجل ولكن قام بتشديد إعدادات الخصوصية (دليل قاطع على وجود الحساب!)
             logger.info(f"[Layer 2] Privacy Restricted! Phone is Registered but hidden. (Phone: {phone})")
-            return {
-                "status": "HAS_SESSION",
-                "phone": phone,
-                "status_text": "⚠️ مسجل"
-            }
+            # تم إزالة الإرجاع المبكر
 
         except PhoneNumberUnoccupiedError:
             logger.info(f"[Layer 2] Phone unoccupied. Not registered. (Phone: {phone})")
-            return {
-                "status": "NO_SESSION",
-                "phone": phone,
-                "status_text": "🆕 غير مسجل"
-            }
+            # تم إزالة الإرجاع المبكر
 
         except PhoneNumberBannedError:
             logger.info(f"[Layer 2] Phone is banned. (Phone: {phone})")
@@ -132,11 +111,7 @@ class SmartCheckStrategy:
 
         except PhoneNumberInvalidError:
             logger.info(f"[Layer 2] Phone invalid. (Phone: {phone})")
-            return {
-                "status": "NO_SESSION",
-                "phone": phone,
-                "status_text": "🆕 غير مسجل"
-            }
+            # تم إزالة الإرجاع المبكر
 
         except FloodWaitError as e:
             await flood_manager.set_flood(account["id"], e.seconds)
@@ -159,21 +134,13 @@ class SmartCheckStrategy:
 
             if any(kw in error_str or kw in error_type for kw in PRIVACY_KEYWORDS):
                 logger.info(f"[Layer 2] Privacy error detected. Phone is Registered. (Phone: {phone})")
-                return {
-                    "status": "HAS_SESSION",
-                    "phone": phone,
-                    "status_text": "⚠️ مسجل"
-                }
+                # تم إزالة الإرجاع المبكر
 
-            if any(kw in error_str or kw in error_type for kw in NO_SESSION_KEYWORDS):
-                logger.info(f"[Layer 2] Keyword 'NOT_FOUND' detected, returning NO_SESSION. (Phone: {phone})")
-                return {
-                    "status": "NO_SESSION",
-                    "phone": phone,
-                    "status_text": "🆕 غير مسجل"
-                }
+            elif any(kw in error_str or kw in error_type for kw in NO_SESSION_KEYWORDS):
+                logger.info(f"[Layer 2] Keyword 'NOT_FOUND' detected. (Phone: {phone})")
+                # تم إزالة الإرجاع المبكر
 
-            if any(kw in error_str or kw in error_type for kw in BANNED_KEYWORDS):
+            elif any(kw in error_str or kw in error_type for kw in BANNED_KEYWORDS):
                 logger.info(f"[Layer 2] Keyword match: Banned. (Phone: {phone})")
                 return {
                     "status": "BANNED",
@@ -181,7 +148,7 @@ class SmartCheckStrategy:
                     "status_text": "📵 محظور"
                 }
 
-            if "AUTH_KEY" in error_str:
+            elif "AUTH_KEY" in error_str:
                 await account_manager.disable_account(account["id"])
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
 
