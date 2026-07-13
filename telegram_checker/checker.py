@@ -217,7 +217,12 @@ class SmartCheckStrategy:
 
             try:
                 # نرسل طلب توليد كود. تيليجرام سيفحص أولاً إذا كان الرقم له حساب نشط
-                result = await active_client.send_code_request(phone)
+                result = await active_client(functions.auth.SendCodeRequest(
+                    phone_number=phone,
+                    api_id=int(account["api_id"]),
+                    api_hash=account["api_hash"],
+                    settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
+                ))
             except Exception as send_err:
                 # إذا فشل إرسال الطلب عبر البروكسي (بسبب انقطاع اتصاله أو تعطل البروكسي)
                 # نحاول عمل Rotation للبروكسي إذا كان مدعوماً
@@ -233,7 +238,12 @@ class SmartCheckStrategy:
                             active_client = proxy_client
                             if not active_client.is_connected():
                                 await active_client.connect()
-                            result = await active_client.send_code_request(phone)
+                            result = await active_client(functions.auth.SendCodeRequest(
+                                phone_number=phone,
+                                api_id=int(account["api_id"]),
+                                api_hash=account["api_hash"],
+                                settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
+                            ))
                             logger.info(f"[Layer 3] Request succeeded after proxy IP rotation.")
                         except Exception as retry_err:
                             logger.warning(f"[Layer 3] Retry after proxy rotation failed: {retry_err}. Falling back to direct.")
@@ -241,7 +251,12 @@ class SmartCheckStrategy:
                             active_client = client
                             if not active_client.is_connected():
                                 await active_client.connect()
-                            result = await active_client.send_code_request(phone)
+                            result = await active_client(functions.auth.SendCodeRequest(
+                                phone_number=phone,
+                                api_id=int(account["api_id"]),
+                                api_hash=account["api_hash"],
+                                settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
+                            ))
                     else:
                         logger.warning(f"[Layer 3] Rotation not supported or failed. Falling back to direct connection...")
                         if proxy_client is not None:
@@ -254,7 +269,12 @@ class SmartCheckStrategy:
                         used_proxy = False
                         if not active_client.is_connected():
                             await active_client.connect()
-                        result = await active_client.send_code_request(phone)
+                        result = await active_client(functions.auth.SendCodeRequest(
+                            phone_number=phone,
+                            api_id=int(account["api_id"]),
+                            api_hash=account["api_hash"],
+                            settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
+                        ))
                 else:
                     raise send_err
 
@@ -356,7 +376,12 @@ class SmartCheckStrategy:
                 await client2._switch_dc(e.new_dc)
                 await asyncio.sleep(0.5)
 
-                result2 = await client2.send_code_request(phone)
+                result2 = await client2(functions.auth.SendCodeRequest(
+                    phone_number=phone,
+                    api_id=int(account["api_id"]),
+                    api_hash=account["api_hash"],
+                    settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
+                ))
                 code_type2 = type(result2.type)
                 logger.info(f"[Layer 3] After DC migration: code type = {code_type2.__name__} (Phone: {phone})")
 
