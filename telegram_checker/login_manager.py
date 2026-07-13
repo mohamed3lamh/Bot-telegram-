@@ -26,10 +26,34 @@ class LoginManager:
         # تنظيف أي عملية سابقة لنفس الرقم
         await self._cleanup_phone(phone)
 
-        client = TelegramClient(StringSession(), int(api_id), api_hash)
+        # الحل الثاني: استخدام تفاصيل جهاز وتطبيق رسمي
+        client = TelegramClient(
+            StringSession(), 
+            int(api_id), 
+            api_hash,
+            device_model='Samsung Galaxy S23 Ultra',
+            system_version='Android 14.0',
+            app_version='10.14.0',
+            lang_code='en',
+            system_lang_code='en-US'
+        )
         await client.connect()
         try:
-            result = await client.send_code_request(phone)
+            # طلب الكود مع محاولة استخدام force_sms
+            result = await client.send_code_request(phone, force_sms=True)
+            
+            # الحل الأول: إذا تم الإرسال لتطبيق آخر، ننتظر ونطلب إعادة إرسال SMS
+            if hasattr(result, 'type') and type(result.type).__name__ == 'SentCodeTypeApp':
+                from telethon.tl.functions.auth import ResendCodeRequest
+                timeout_val = getattr(result, 'timeout', 5)
+                if timeout_val and timeout_val > 0:
+                    await asyncio.sleep(timeout_val + 2)
+                
+                sms_result = await client(ResendCodeRequest(
+                    phone_number=phone,
+                    phone_code_hash=result.phone_code_hash
+                ))
+                result = sms_result
         except FloodWaitError:
             await client.disconnect()
             raise
