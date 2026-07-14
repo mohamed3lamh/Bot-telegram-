@@ -280,20 +280,18 @@ class SmartCheckStrategy:
 
             # --- تحليل النتيجة بدقة ---
             if used_proxy:
-                # عند الاتصال عبر proxy مطابق لدولة الرقم:
-                # SentCodeTypeApp → مسجل بجلسة نشطة
-                # SentCodeTypeEmailCode → مسجل بدون جلسة (يُرسل للبريد)
-                # SentCodeTypeSms/Flash/MissedCall → مسجل بدون جلسة نشطة (يُرسل SMS)
-                # نتائج دقيقة 100% لأن الـ proxy يمنع حماية تيليجرام المضادة
-                if code_type == SentCodeTypeApp:
-                    logger.info(f"[Layer 3+Proxy] App code → Registered with active session. (Phone: {phone})")
-                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
-                elif code_type == SentCodeTypeEmailCode:
-                    logger.info(f"[Layer 3+Proxy] Email code → Registered (no active session). (Phone: {phone})")
-                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                # لقد اكتشفنا أن تيليجرام يقوم بتضليل البروكسيات أحياناً ويرجع SentCodeTypeApp لأرقام غير مسجلة!
+                # لذلك سنطبق نفس فلتر الذكاء: إذا ادعى أنه App/Email لكن الطبقات السابقة لم تجده، نعتبره غير مسجل.
+                if code_type in (SentCodeTypeApp, SentCodeTypeEmailCode):
+                    if layer_results.get("layer1") == "HAS_SESSION" or layer_results.get("layer2") == "HAS_SESSION":
+                        logger.info(f"[Layer 3+Proxy] App/Email code and Layer 1/2 confirmed it. (Phone: {phone})")
+                        return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                    else:
+                        logger.info(f"[Layer 3+Proxy] App/Email code but Layer 1/2 didn't find it. Assuming Deception -> NO_SESSION. (Phone: {phone})")
+                        return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
                 else:
-                    # SMS / FlashCall / MissedCall عبر proxy = مسجل بدون جلسة تطبيق
-                    logger.info(f"[Layer 3+Proxy] SMS/Flash code → Registered (no app session). (Phone: {phone})")
+                    # SMS / FlashCall / MissedCall = مسجل بدون جلسة تطبيق
+                    logger.info(f"[Layer 3+Proxy] SMS/Flash code → Registered. (Phone: {phone})")
                     return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
             else:
                 # بدون proxy: بما أن خوادم تيليجرام تخدع الفاحص وتعيد SentCodeTypeApp دائماً،
@@ -384,14 +382,15 @@ class SmartCheckStrategy:
                 # أي نوع كود (App / Email / SMS / Flash) يُثبت أن الرقم مسجل
                 if used_proxy:
                     if code_type2 in (SentCodeTypeApp, SentCodeTypeEmailCode):
-                        logger.info(f"[Layer 3+Proxy] After DC migration: App/Email → Registered. (Phone: {phone})")
+                        if layer_results.get("layer1") == "HAS_SESSION" or layer_results.get("layer2") == "HAS_SESSION":
+                            logger.info(f"[Layer 3+Proxy] After DC migration: App/Email and Layer 1/2 confirmed. (Phone: {phone})")
+                            return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                        else:
+                            logger.info(f"[Layer 3+Proxy] After DC migration: App/Email but Layer 1/2 didn't find it. Assuming Deception -> NO_SESSION. (Phone: {phone})")
+                            return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
                     else:
-                        logger.info(f"[Layer 3+Proxy] After DC migration: SMS/Flash → Registered (no active app session). (Phone: {phone})")
-                    return {
-                        "status": "HAS_SESSION",
-                        "phone": phone,
-                        "status_text": "⚠️ مسجل"
-                    }
+                        logger.info(f"[Layer 3+Proxy] After DC migration: SMS/Flash → Registered. (Phone: {phone})")
+                        return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
                 else:
                     if layer_results.get("layer1") == "HAS_SESSION" or layer_results.get("layer2") == "HAS_SESSION":
                         logger.info(f"[Layer 3] After DC migration (Direct connection) returned code, but Layer 1/2 confirmed it's registered. Returning HAS_SESSION. (Phone: {phone})")
