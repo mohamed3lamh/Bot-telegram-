@@ -39,7 +39,7 @@ class StaticProxyDriver(BaseProxyDriver):
             def _check():
                 s = socks.socksocket()
                 s.set_proxy(ptype, host, port, True, username, password)
-                s.settimeout(5.0)
+                s.settimeout(15.0)
                 # نحاول الاتصال بخوادم تيليجرام مباشرة للتأكد
                 try:
                     s.connect(("149.154.167.50", 443)) # خادم DC2 لتيليجرام
