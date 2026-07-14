@@ -40,6 +40,17 @@ async def show_welcome(update: Update, user_name: str):
 def get_correct_table_name():
     return "user_bots"
 
+async def set_honeypot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    if not context.args:
+        await update.message.reply_text("الرجاء إرسال الرقم. مثال:\n/set_honeypot +123456789")
+        return
+    phone = context.args[0]
+    await asyncio.to_thread(db.set_setting, "honeypot_number", phone)
+    await update.message.reply_text(f"✅ تم حفظ رقم الفخ بنجاح: {phone}\n\nسيقوم البوت الآن بفحص هذا الرقم تلقائياً لاختبار الحسابات التي تدعي عدم وجود أرقام الصيد للتأكد من سلامتها من حظر الظل.")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name
@@ -1032,6 +1043,7 @@ async def main():
     main_app.add_handler(checker_conv)
 
     main_app.add_handler(CommandHandler("start", start))
+    main_app.add_handler(CommandHandler("set_honeypot", set_honeypot))
     main_app.add_handler(CommandHandler("admin", admin_command))
     main_app.add_handler(CallbackQueryHandler(button_handler))
 

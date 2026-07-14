@@ -163,6 +163,46 @@ class SmartCheckStrategy:
                 await account_manager.disable_account(account["id"])
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
 
+        # --- اختبار الفخ (Honeypot Test) لتأكيد حظر الظل ---
+        import database as db
+        honeypot_number = await asyncio.to_thread(db.get_setting, "honeypot_number")
+        if honeypot_number and layer_results.get("layer1") == "NO_SESSION" and layer_results.get("layer2") == "NO_SESSION":
+            if phone != honeypot_number:
+                if not hasattr(self, "_honeypot_cache"):
+                    self._honeypot_cache = {}
+                
+                last_verified = self._honeypot_cache.get(account["id"], 0)
+                if time.monotonic() - last_verified > 300: # 5 minutes
+                    logger.info(f"[Honeypot] Testing account {account['id']} with honeypot {honeypot_number}...")
+                    found_hp = False
+                    try:
+                        hp_contact = types.InputPhoneContact(client_id=0, phone=honeypot_number, first_name="TempHP", last_name="")
+                        hp_res = await asyncio.wait_for(
+                            client(functions.contacts.ImportContactsRequest(contacts=[hp_contact])),
+                            timeout=6.0
+                        )
+                        if getattr(hp_res, 'users', None):
+                            found_hp = True
+                            await client(functions.contacts.DeleteContactsRequest(id=[hp_res.users[0].id]))
+                        elif getattr(hp_res, 'imported', None):
+                            found_hp = True
+                            await client(functions.contacts.DeleteContactsRequest(id=[hp_res.imported[0].user_id]))
+                        
+                        if not found_hp:
+                            hp_res2 = await client(functions.contacts.ResolvePhoneRequest(phone=honeypot_number))
+                            if getattr(hp_res2, 'users', None):
+                                found_hp = True
+                    except Exception as hp_err:
+                        logger.warning(f"[Honeypot] Check error: {hp_err}")
+                        
+                    if not found_hp:
+                        logger.error(f"[Honeypot] 🚨 Account {account['id']} FAILED the honeypot test! It is SHADOWBANNED!")
+                        await account_manager.disable_account(account["id"])
+                        return {"status": "ERROR", "phone": phone, "status_text": "❌ الحساب محظور (حظر ظل) وتم إيقافه!"}
+                    else:
+                        logger.info(f"[Honeypot] ✅ Account {account['id']} passed the honeypot test.")
+                        self._honeypot_cache[account["id"]] = time.monotonic()
+
         # --- الطبقة الثالثة: فحص التدفق بالكود التجريبي (send_code_request) ---
         # يستخدم بروكسي من دولة الرقم لضمان الدقة وتجنب حماية تيليجرام المضادة للبوتات
         logger.info(f"[Layer 3: SendCode] Running send_code_request for {phone}")
