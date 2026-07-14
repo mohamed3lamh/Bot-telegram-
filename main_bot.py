@@ -42,7 +42,7 @@ def get_correct_table_name():
 
 async def set_honeypot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
+    if ADMIN_ID == 0 or user_id != ADMIN_ID:
         return
     if not context.args:
         await update.message.reply_text("الرجاء إرسال الرقم. مثال:\n/set_honeypot +123456789")
