@@ -32,7 +32,13 @@ class StaticProxyDriver(BaseProxyDriver):
         port = int(proxy_config.get("port"))
         username = proxy_config.get("username")
         password = proxy_config.get("password")
-        ptype = socks.SOCKS5 # الافتراضي
+        ptype_str = proxy_config.get("proxy_type", "SOCKS5").upper()
+        if ptype_str == "HTTP":
+            ptype = socks.HTTP
+        elif ptype_str == "SOCKS4":
+            ptype = socks.SOCKS4
+        else:
+            ptype = socks.SOCKS5
         
         try:
             # تشغيل الفحص في خيط منفصل لتجنب حظر الحلقة البرمجية

@@ -39,6 +39,11 @@ async def check_all_proxies_health():
             "proxy_type": p.get("proxy_type", "SOCKS5")
         }
 
+        # طباعة للتحقق من وجود الباسورد واليوزرنيم حقاً!
+        u_len = len(str(proxy_config['username'])) if proxy_config['username'] else 0
+        p_len = len(str(proxy_config['password'])) if proxy_config['password'] else 0
+        logger.info(f"[HealthChecker] Checking #{proxy_id} ({host}:{port}) - UserLen: {u_len}, PassLen: {p_len}, Type: {proxy_config['proxy_type']}")
+
         try:
             # الحصول على نسخة من الـ Driver المناسب للمزود
             driver = get_driver_instance(provider)
