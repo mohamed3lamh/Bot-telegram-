@@ -204,6 +204,8 @@ class SmartCheckStrategy:
                     api_hash=account["api_hash"],
                     settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
                 ))
+            except PhoneMigrateError:
+                raise
             except Exception as send_err:
                 # إذا فشل إرسال الطلب عبر البروكسي (بسبب انقطاع اتصاله أو تعطل البروكسي)
                 # نحاول عمل Rotation للبروكسي إذا كان مدعوماً
@@ -355,12 +357,10 @@ class SmartCheckStrategy:
             # الرقم مسجل في DC مختلف عن DC الفاحص الحالي → ننتقل للـ DC الصحيح ونُعيد المحاولة
             logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Re-routing and retrying send_code... (Phone: {phone})")
             try:
-                await telegram_client_manager.disconnect_client(account["id"])
-                client2 = await telegram_client_manager.get_client(account)
-                await client2._switch_dc(e.new_dc)
+                await active_client._switch_dc(e.new_dc)
                 await asyncio.sleep(0.5)
 
-                result2 = await client2(functions.auth.SendCodeRequest(
+                result2 = await active_client(functions.auth.SendCodeRequest(
                     phone_number=phone,
                     api_id=int(account["api_id"]),
                     api_hash=account["api_hash"],
@@ -369,11 +369,9 @@ class SmartCheckStrategy:
                 code_type2 = type(result2.type)
                 logger.info(f"[Layer 3] After DC migration: code type = {code_type2.__name__} (Phone: {phone})")
 
-
-
                 # إلغاء الكود فوراً بعد الانتقال أيضاً
                 try:
-                    await client2(functions.auth.CancelCodeRequest(
+                    await active_client(functions.auth.CancelCodeRequest(
                         phone_number=phone,
                         phone_code_hash=result2.phone_code_hash
                     ))
@@ -384,15 +382,23 @@ class SmartCheckStrategy:
                 is_success = True
                 
                 # أي نوع كود (App / Email / SMS / Flash) يُثبت أن الرقم مسجل
-                if code_type2 in (SentCodeTypeApp, SentCodeTypeEmailCode):
-                    logger.info(f"[Layer 3] After DC migration: App/Email → Registered. (Phone: {phone})")
+                if used_proxy:
+                    if code_type2 in (SentCodeTypeApp, SentCodeTypeEmailCode):
+                        logger.info(f"[Layer 3+Proxy] After DC migration: App/Email → Registered. (Phone: {phone})")
+                    else:
+                        logger.info(f"[Layer 3+Proxy] After DC migration: SMS/Flash → Registered (no active app session). (Phone: {phone})")
+                    return {
+                        "status": "HAS_SESSION",
+                        "phone": phone,
+                        "status_text": "⚠️ مسجل"
+                    }
                 else:
-                    logger.info(f"[Layer 3] After DC migration: SMS/Flash → Registered (no active app session). (Phone: {phone})")
-                return {
-                    "status": "HAS_SESSION",
-                    "phone": phone,
-                    "status_text": "⚠️ مسجل"
-                }
+                    if layer_results.get("layer1") == "HAS_SESSION" or layer_results.get("layer2") == "HAS_SESSION":
+                        logger.info(f"[Layer 3] After DC migration (Direct connection) returned code, but Layer 1/2 confirmed it's registered. Returning HAS_SESSION. (Phone: {phone})")
+                        return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                    else:
+                        logger.info(f"[Layer 3] After DC migration (Direct connection) returned code, and previous layers didn't find it. Assuming NO_SESSION. (Phone: {phone})")
+                        return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
 
             except PhoneNumberBannedError:
                 logger.info(f"[Layer 3] After DC migration: Phone is Banned. (Phone: {phone})")
