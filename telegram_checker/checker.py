@@ -196,12 +196,27 @@ class SmartCheckStrategy:
                         logger.warning(f"[Honeypot] Check error: {hp_err}")
                         
                     if not found_hp:
-                        logger.error(f"[Honeypot] 🚨 Account {account['id']} FAILED the honeypot test! It is SHADOWBANNED!")
-                        await account_manager.disable_account(account["id"])
-                        return {"status": "ERROR", "phone": phone, "status_text": "❌ الحساب محظور (حظر ظل) وتم إيقافه!"}
+                        if not hasattr(self, "_shadowban_strikes"):
+                            self._shadowban_strikes = {}
+                        
+                        strikes = self._shadowban_strikes.get(account["id"], 0) + 1
+                        self._shadowban_strikes[account["id"]] = strikes
+                        
+                        if strikes >= 2:
+                            logger.error(f"[Honeypot] 🚨 Account {account['id']} FAILED honeypot for the SECOND time! Deleting it completely!")
+                            await asyncio.to_thread(db.delete_telegram_account, account["id"])
+                            account_manager.invalidate_accounts_cache()
+                            return {"status": "ERROR", "phone": phone, "status_text": "❌ الحساب تالف وتم حذفه نهائياً!"}
+                        else:
+                            logger.error(f"[Honeypot] 🚨 Account {account['id']} FAILED the honeypot test! Setting 24h rest period.")
+                            await flood_manager.set_flood(account["id"], 24 * 3600)
+                            return {"status": "ERROR", "phone": phone, "status_text": "❌ الحساب في فترة استشفاء (24 ساعة)"}
                     else:
                         logger.info(f"[Honeypot] ✅ Account {account['id']} passed the honeypot test.")
                         self._honeypot_cache[account["id"]] = time.monotonic()
+                        # تصفير المخالفات إذا تعافى الحساب
+                        if hasattr(self, "_shadowban_strikes") and account["id"] in self._shadowban_strikes:
+                            self._shadowban_strikes[account["id"]] = 0
 
         # --- الطبقة الثالثة: فحص التدفق بالكود التجريبي (send_code_request) ---
         # يستخدم بروكسي من دولة الرقم لضمان الدقة وتجنب حماية تيليجرام المضادة للبوتات
