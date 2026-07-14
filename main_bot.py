@@ -153,31 +153,41 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif action == "add_proxy":
             try:
-                parts = text.split(",")
-                if len(parts) >= 3:
-                    country_code = parts[0].strip().upper()
-                    host = parts[1].strip()
-                    port = int(parts[2].strip())
-                    username = parts[3].strip() if len(parts) > 3 and parts[3].strip() else None
-                    password = parts[4].strip() if len(parts) > 4 and parts[4].strip() else None
-                    provider = parts[5].strip().upper() if len(parts) > 5 and parts[5].strip() else 'STATIC'
-                    rotation_url = parts[6].strip() if len(parts) > 6 and parts[6].strip() else None
-                    
-                    await asyncio.to_thread(
-                        db.add_proxy, 
-                        country_code, 
-                        host, 
-                        port, 
-                        username, 
-                        password, 
-                        'SOCKS5', 
-                        provider, 
-                        rotation_url
-                    )
-                    await asyncio.to_thread(db.log_activity, user_id, "إضافة بروكسي", f"دولة: {country_code} - {host}:{port} ({provider})")
-                    await update.message.reply_text(f"✅ تم إضافة بروكسي بنجاح لدولة `{country_code}` من المزود `{provider}`.")
+                lines = text.strip().split('\n')
+                added_count = 0
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split(",")
+                    if len(parts) >= 3:
+                        country_code = parts[0].strip().upper()
+                        host = parts[1].strip()
+                        port = int(parts[2].strip())
+                        username = parts[3].strip() if len(parts) > 3 and parts[3].strip() else None
+                        password = parts[4].strip() if len(parts) > 4 and parts[4].strip() else None
+                        provider = parts[5].strip().upper() if len(parts) > 5 and parts[5].strip() else 'STATIC'
+                        rotation_url = parts[6].strip() if len(parts) > 6 and parts[6].strip() else None
+                        
+                        await asyncio.to_thread(
+                            db.add_proxy, 
+                            country_code, 
+                            host, 
+                            port, 
+                            username, 
+                            password, 
+                            'SOCKS5', 
+                            provider, 
+                            rotation_url
+                        )
+                        added_count += 1
+                
+                if added_count > 0:
+                    await asyncio.to_thread(db.log_activity, user_id, "إضافة بروكسيات", f"تم إضافة {added_count} بروكسي")
+                    await update.message.reply_text(f"✅ تم إضافة {added_count} بروكسي بنجاح.")
                 else:
-                    await update.message.reply_text("❌ صيغة خاطئة. يرجى مراجعة إرشادات الإضافة لإرسال البيانات بالصيغة المطلوبة.")
+                    await update.message.reply_text("❌ صيغة خاطئة. لم يتم التعرف على أي بروكسي صالح.")
+
             except Exception as e:
                 await update.message.reply_text(f"❌ حدث خطأ أثناء إضافة البروكسي: {e}")
             context.user_data.pop("admin_action", None)
