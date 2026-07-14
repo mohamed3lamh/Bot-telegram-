@@ -62,12 +62,12 @@ class TelegramClientManager:
                         pass
                     self.clients.pop(account_id, None)
 
-            # --- المحاكاة الاحترافية لتطبيق الأندرويد الرسمي ---
-            # نتجاهل الـ api_id الخاص بالحساب ونستخدم الـ api_id الرسمي لتطبيق الأندرويد (6)
+            # --- المحاكاة الاحترافية لتطبيق الهاتف ---
+            # ملاحظة: يجب استخدام نفس api_id الذي تم إنشاء الجلسة به، لكننا نموه بصمة الجهاز
             client = TelegramClient(
                 StringSession(account["session"]),
-                6,  # Official Telegram Android API_ID
-                "eb06d4abfb49dc3eeb1aeb98ae0f581e",  # Official Telegram Android API_HASH
+                int(account["api_id"]),
+                account["api_hash"],
                 device_model='SM-S918B', # Samsung Galaxy S23 Ultra real model
                 system_version='SDK 34', # Android 14
                 app_version='10.14.5',
@@ -93,8 +93,8 @@ class TelegramClientManager:
         """
         client = TelegramClient(
             StringSession(account["session"]),
-            6,  # Official Telegram Android API_ID
-            "eb06d4abfb49dc3eeb1aeb98ae0f581e",  # Official Telegram Android API_HASH
+            int(account["api_id"]),
+            account["api_hash"],
             proxy=proxy,
             device_model='SM-S918B',
             system_version='SDK 34',
