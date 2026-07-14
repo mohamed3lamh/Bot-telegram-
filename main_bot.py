@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler
 from telegram.request import HTTPXRequest
+import telegram.error
 import database as db
 from bot_manager import bot_manager
 from telegram_checker.login_manager import login_manager
@@ -492,7 +493,11 @@ async def show_proxy_management(update: Update):
         keyboard.append([InlineKeyboardButton("🔙 العودة للوحة الإدارة", callback_data="admin_panel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     if update.callback_query:
-        await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        try:
+            await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        except telegram.error.BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
     else:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
