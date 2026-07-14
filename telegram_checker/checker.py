@@ -50,14 +50,14 @@ class SmartCheckStrategy:
                 await client(functions.contacts.DeleteContactsRequest(id=[user_id]))
                 logger.info(f"[Layer 1] User found directly! Registered. (Phone: {phone})")
                 layer_results["layer1"] = "HAS_SESSION"
-                return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
             
             elif import_res.imported:
                 imported_user_id = import_res.imported[0].user_id
                 await client(functions.contacts.DeleteContactsRequest(id=[imported_user_id]))
                 logger.info(f"[Layer 1] Contact imported! Registered. (Phone: {phone})")
                 layer_results["layer1"] = "HAS_SESSION"
-                return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
         except PhoneMigrateError as e:
             # معالجة فورية لانتقال مركز البيانات
@@ -94,7 +94,7 @@ class SmartCheckStrategy:
             if resolved.users:
                 logger.info(f"[Layer 2] User resolved successfully! Registered. (Phone: {phone})")
                 layer_results["layer2"] = "HAS_SESSION"
-                return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
             else:
                 logger.info(f"[Layer 2] ResolvePhone returned empty user. Moving to Layer 3...")
 
@@ -102,7 +102,7 @@ class SmartCheckStrategy:
             # مستخدم مسجل ولكن قام بتشديد إعدادات الخصوصية (دليل قاطع على وجود الحساب!)
             logger.info(f"[Layer 2] Privacy Restricted! Phone is Registered but hidden. (Phone: {phone})")
             layer_results["layer2"] = "HAS_SESSION"
-            return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+            return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
         except PhoneNumberUnoccupiedError:
             logger.info(f"[Layer 2] Phone unoccupied. Not registered. (Phone: {phone})")
@@ -114,7 +114,7 @@ class SmartCheckStrategy:
             return {
                 "status": "BANNED",
                 "phone": phone,
-                "status_text": "📵 محظور"
+                "status_text": "📵 مـحـظـور"
             }
 
         except PhoneNumberInvalidError:
@@ -145,7 +145,7 @@ class SmartCheckStrategy:
             if any(kw in error_str or kw in error_type for kw in PRIVACY_KEYWORDS):
                 logger.info(f"[Layer 2] Privacy error detected. Phone is Registered. (Phone: {phone})")
                 layer_results["layer2"] = "HAS_SESSION"
-                return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
             elif any(kw in error_str or kw in error_type for kw in NO_SESSION_KEYWORDS):
                 logger.info(f"[Layer 2] Keyword 'NOT_FOUND' detected. (Phone: {phone})")
@@ -156,7 +156,7 @@ class SmartCheckStrategy:
                 return {
                     "status": "BANNED",
                     "phone": phone,
-                    "status_text": "📵 محظور"
+                    "status_text": "📵 مـحـظـور"
                 }
 
             elif "AUTH_KEY" in error_str:
@@ -342,20 +342,20 @@ class SmartCheckStrategy:
                 # نتائج دقيقة 100% لأن الـ proxy يمنع حماية تيليجرام المضادة
                 if code_type == SentCodeTypeApp:
                     logger.info(f"[Layer 3+Proxy] App code → Registered with active session. (Phone: {phone})")
-                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
                 elif code_type == SentCodeTypeEmailCode:
                     logger.info(f"[Layer 3+Proxy] Email code → Registered (no active session). (Phone: {phone})")
-                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
                 else:
                     # SMS / FlashCall / MissedCall عبر proxy = مسجل بدون جلسة تطبيق
                     logger.info(f"[Layer 3+Proxy] SMS/Flash code → Registered (no app session). (Phone: {phone})")
-                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
             else:
                 # بدون proxy: بما أن خوادم تيليجرام تخدع الفاحص وتعيد SentCodeTypeApp دائماً،
                 # سنقوم بمراجعة نتائج الطبقة الأولى والثانية بدلاً من الافتراض الأعمى أنه غير مسجل.
                 if layer_results.get("layer1") == "HAS_SESSION" or layer_results.get("layer2") == "HAS_SESSION":
                     logger.info(f"[Layer 3] Direct connection returned code, but Layer 1/2 confirmed it's registered. Returning HAS_SESSION. (Phone: {phone})")
-                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
                 else:
                     logger.info(f"[Layer 3] Direct connection returned code, and previous layers didn't find it. Cannot determine accuracy. (Phone: {phone})")
                     return {"status": "INACCURATE", "phone": phone, "status_text": "⚠️ فحص ليس دقيق"}
@@ -375,7 +375,7 @@ class SmartCheckStrategy:
             return {
                 "status": "BANNED",
                 "phone": phone,
-                "status_text": "📵 محظور"
+                "status_text": "📵 مـحـظـور"
             }
 
         except PhoneNumberInvalidError:
@@ -405,7 +405,7 @@ class SmartCheckStrategy:
             return {
                 "status": "HAS_SESSION",
                 "phone": phone,
-                "status_text": "⚠️ مسجل"
+                "status_text": "⚠️ الرقم لديه جلسة"
             }
 
         except PhoneMigrateError as e:
@@ -445,12 +445,12 @@ class SmartCheckStrategy:
                     return {
                         "status": "HAS_SESSION",
                         "phone": phone,
-                        "status_text": "⚠️ مسجل"
+                        "status_text": "⚠️ الرقم لديه جلسة"
                     }
                 else:
                     if layer_results.get("layer1") == "HAS_SESSION" or layer_results.get("layer2") == "HAS_SESSION":
                         logger.info(f"[Layer 3] After DC migration (Direct connection) returned code, but Layer 1/2 confirmed it's registered. Returning HAS_SESSION. (Phone: {phone})")
-                        return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
+                        return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
                     else:
                         logger.info(f"[Layer 3] After DC migration (Direct connection) returned code, and previous layers didn't find it. Cannot determine accuracy. (Phone: {phone})")
                         return {"status": "INACCURATE", "phone": phone, "status_text": "⚠️ فحص ليس دقيق"}
@@ -458,7 +458,7 @@ class SmartCheckStrategy:
             except PhoneNumberBannedError:
                 logger.info(f"[Layer 3] After DC migration: Phone is Banned. (Phone: {phone})")
                 is_success = True
-                return {"status": "BANNED", "phone": phone, "status_text": "📵 محظور"}
+                return {"status": "BANNED", "phone": phone, "status_text": "📵 مـحـظـور"}
 
             except PhoneNumberUnoccupiedError:
                 logger.info(f"[Layer 3] After DC migration: Phone is Not Registered. (Phone: {phone})")
@@ -484,7 +484,7 @@ class SmartCheckStrategy:
                 return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
             if "BANNED" in error_str:
                 is_success = True
-                return {"status": "BANNED", "phone": phone, "status_text": "📵 محظور"}
+                return {"status": "BANNED", "phone": phone, "status_text": "📵 مـحـظـور"}
             if "AUTH_KEY" in error_str:
                 await account_manager.disable_account(account["id"])
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
