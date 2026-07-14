@@ -77,7 +77,7 @@ class AccountManager:
         self._accounts_cache = None
         self._accounts_cache_ts = 0
 
-    async def get_available_account(self, exclude_id=None):
+    async def get_available_account(self):
         """
         يرجع حساباً صالحاً للاستخدام (ليس معطلاً وليس داخل FloodWait)،
         بتوزيع Round-Robin بين الحسابات المتاحة ومطابقة معدل الطلبات (Rate Limiting)
@@ -89,8 +89,6 @@ class AccountManager:
 
         now = self._naive_utcnow()
         available = [a for a in accounts if self._is_flood_expired(a["flood_until"], now)]
-        if exclude_id is not None:
-            available = [a for a in available if a["id"] != exclude_id]
         if not available:
             return None
 

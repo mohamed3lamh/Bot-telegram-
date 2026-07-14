@@ -885,29 +885,6 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                     else:
                         status_text = "⚪️ غير معروف / معلق"
 
-                    # --- الفحص المزدوج للأرقام التي تظهر كغير مسجلة (Option 1) ---
-                    if check_status in ("NO_SESSION", "INACCURATE"):
-                        logger.info(f"[DOUBLE CHECK] {phone_number} returned {check_status}. Fetching a second checker account to verify...")
-                        account_checker_2 = await telegram_checker.get_available_account(exclude_id=account_checker["id"])
-                        if account_checker_2:
-                            logger.info(f"[DOUBLE CHECK] Verifying {phone_number} with account ID {account_checker_2['id']}...")
-                            check_result_2 = await telegram_checker.check_phone(account_checker_2, phone_number)
-                            check_status_2 = check_result_2.get("status")
-                            
-                            if check_status_2 == "HAS_SESSION":
-                                logger.error(f"[DOUBLE CHECK] 🚨 Account {account_checker['id']} is SHADOWBANNED! It missed {phone_number} which was found by account {account_checker_2['id']}.")
-                                # تحديث النتيجة لتكون النتيجة الصحيحة من الحساب الثاني
-                                check_result = check_result_2
-                                check_status = check_status_2
-                                raw_status = check_result.get("status_text", "")
-                                status_text = raw_status if raw_status else "⚪️ غير معروف / معلق"
-                            else:
-                                logger.info(f"[DOUBLE CHECK] ✅ Both accounts agree that {phone_number} is {check_status_2}.")
-                        else:
-                            logger.warning(f"[DOUBLE CHECK] No second checker account available to verify {phone_number}.")
-                    # -------------------------------------------------------------
-
-
                     # ===== فلترة الأرقام بناءً على إعدادات المستخدم =====
                     # تحويل check_status إلى تصنيف مبسط
                     is_banned   = check_status == "BANNED"
