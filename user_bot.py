@@ -888,9 +888,10 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                     # ===== فلترة الأرقام بناءً على إعدادات المستخدم =====
                     # تحويل check_status إلى تصنيف مبسط
                     is_banned   = check_status == "BANNED"
-                    is_working  = check_status in ("HAS_SESSION", "NO_SESSION")
+                    is_working  = check_status in ("HAS_SESSION", "NO_SESSION", "INACCURATE")
                     has_session = check_status == "HAS_SESSION"
                     no_session  = check_status == "NO_SESSION"
+                    is_inaccurate = check_status == "INACCURATE"
 
                     # --- فلتر number_type ---
                     if want_type == "banned" and not is_banned:
@@ -907,7 +908,7 @@ async def check_and_hunt_numbers(context: ContextTypes.DEFAULT_TYPE):
                         return
 
                     # --- فلتر session_status (يُطبَّق فقط على الأرقام الشغّالة غير المحظورة) ---
-                    if not is_banned:
+                    if not is_banned and not is_inaccurate:
                         if want_session == "has_session" and not has_session:
                             logger.info(
                                 f"[FILTER] {phone_number}: تم تجاهله - المستخدم يريد (لديه جلسة) فقط "
