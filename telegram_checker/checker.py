@@ -302,8 +302,8 @@ class SmartCheckStrategy:
                     logger.info(f"[Layer 3] Direct connection returned code, but Layer 1/2 confirmed it's registered. Returning HAS_SESSION. (Phone: {phone})")
                     return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
                 else:
-                    logger.info(f"[Layer 3] Direct connection returned code, and previous layers didn't find it. Assuming NO_SESSION. (Phone: {phone})")
-                    return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
+                    logger.info(f"[Layer 3] Direct connection returned code, and previous layers didn't find it. Cannot determine accuracy. (Phone: {phone})")
+                    return {"status": "INACCURATE", "phone": phone, "status_text": "⚠️ فحص ليس دقيق"}
 
         except PhoneNumberUnoccupiedError:
             logger.info(f"[Layer 3] Unoccupied error. Phone is Not Registered. (Phone: {phone})")
@@ -397,8 +397,8 @@ class SmartCheckStrategy:
                         logger.info(f"[Layer 3] After DC migration (Direct connection) returned code, but Layer 1/2 confirmed it's registered. Returning HAS_SESSION. (Phone: {phone})")
                         return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ مسجل"}
                     else:
-                        logger.info(f"[Layer 3] After DC migration (Direct connection) returned code, and previous layers didn't find it. Assuming NO_SESSION. (Phone: {phone})")
-                        return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
+                        logger.info(f"[Layer 3] After DC migration (Direct connection) returned code, and previous layers didn't find it. Cannot determine accuracy. (Phone: {phone})")
+                        return {"status": "INACCURATE", "phone": phone, "status_text": "⚠️ فحص ليس دقيق"}
 
             except PhoneNumberBannedError:
                 logger.info(f"[Layer 3] After DC migration: Phone is Banned. (Phone: {phone})")
