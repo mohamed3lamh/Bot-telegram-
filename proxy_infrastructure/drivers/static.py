@@ -44,11 +44,15 @@ class StaticProxyDriver(BaseProxyDriver):
                 try:
                     s.connect(("149.154.167.50", 443)) # خادم DC2 لتيليجرام
                     return True
-                except Exception:
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).error(f"[STATIC_DRIVER] Connection failed for {host}:{port}. Error: {e}")
                     return False
                 finally:
                     s.close()
             
             return await asyncio.to_thread(_check)
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"[STATIC_DRIVER] Thread error: {e}")
             return False
