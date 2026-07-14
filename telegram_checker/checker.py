@@ -532,11 +532,11 @@ class TelegramChecker:
             
             await asyncio.sleep(300) # فحص كل 5 دقائق
 
-    async def get_available_account(self):
+    async def get_available_account(self, exclude_id=None):
         if not hasattr(self, "_recovery_task_started"):
             self._recovery_task_started = True
             asyncio.create_task(self._auto_recovery_loop())
-        return await account_manager.get_available_account()
+        return await account_manager.get_available_account(exclude_id=exclude_id)
 
     async def wait_for_account(self):
         """
