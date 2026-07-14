@@ -856,7 +856,7 @@ def get_proxy_for_country(country_code):
 def get_all_proxies():
     """جلب جميع البروكسيات مع الإحصائيات."""
     rows = db_execute("""
-        SELECT id, country_code, proxy_type, host, port, username, is_active, created_at, provider, success_count, failure_count, avg_latency
+        SELECT id, country_code, proxy_type, host, port, username, password, is_active, created_at, provider, success_count, failure_count, avg_latency
         FROM proxies
         ORDER BY country_code, id
     """, commit=False, fetch='all')
@@ -870,12 +870,13 @@ def get_all_proxies():
             "host": r[3],
             "port": r[4],
             "username": r[5],
-            "is_active": r[6],
-            "created_at": r[7],
-            "provider": r[8],
-            "success_count": r[9],
-            "failure_count": r[10],
-            "avg_latency": r[11]
+            "password": r[6],
+            "is_active": r[7],
+            "created_at": r[8],
+            "provider": r[9],
+            "success_count": r[10],
+            "failure_count": r[11],
+            "avg_latency": r[12]
         }
         for r in rows
     ]
