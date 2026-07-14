@@ -170,6 +170,8 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         provider = parts[5].strip().upper() if len(parts) > 5 and parts[5].strip() else 'STATIC'
                         rotation_url = parts[6].strip() if len(parts) > 6 and parts[6].strip() else None
                         
+                        ptype = 'HTTP' if port in (80, 443) else 'SOCKS5'
+                        
                         await asyncio.to_thread(
                             db.add_proxy, 
                             country_code, 
@@ -177,7 +179,7 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             port, 
                             username, 
                             password, 
-                            'SOCKS5', 
+                            ptype, 
                             provider, 
                             rotation_url
                         )
