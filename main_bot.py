@@ -222,6 +222,16 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"❌ حدث خطأ أثناء إضافة البروكسي: {e}")
             context.user_data.pop("admin_action", None)
             return
+        elif action == "set_checker_bot":
+            bot_username = text.replace("@", "").strip()
+            if bot_username.lower() == "off":
+                await asyncio.to_thread(db.set_setting, "checker_bot_username", "")
+                await update.message.reply_text("❌ تم تعطيل الربط مع بوت الفحص الخارجي.")
+            else:
+                await asyncio.to_thread(db.set_setting, "checker_bot_username", bot_username)
+                await update.message.reply_text(f"✅ تم تفعيل الربط مع البوت: @{bot_username}")
+            context.user_data.pop("admin_action", None)
+            return
 
     status_msg = await update.message.reply_text("⏳ جاري التحقق من صحة التوكن المرسل وحفظه...")
     is_valid = await bot_manager.validate_token(text)
@@ -331,6 +341,10 @@ async def show_admin_panel(update: Update):
             InlineKeyboardButton("🌐 إدارة البروكسيات", callback_data="adm_manage_proxies"),
             InlineKeyboardButton("➕ إضافة بروكسي", callback_data="adm_add_proxy")
         ],
+        [
+            InlineKeyboardButton("🤖 ربط بوت فحص خارجي", callback_data="adm_checker_bot")
+        ],
+
         [
             InlineKeyboardButton("⬅️ الواجهة الرئيسية", callback_data="main_menu")
         ]
@@ -728,6 +742,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif query.data == "adm_add_proxy":
             await start_add_proxy(update, context)
+            return
+        elif query.data == "adm_checker_bot":
+            context.user_data["admin_action"] = "set_checker_bot"
+            await query.message.reply_text(
+                "🤖 **نظام ربط بوت فحص خارجي**\n\n"
+                "الرجاء إرسال معرف البوت. مثال:\n"
+                "`SessionCheckerReBoT`\n\n"
+                "لإلغاء التفعيل أرسل: `off`",
+                parse_mode="Markdown"
+            )
             return
         elif query.data.startswith("delete_pxy_"):
             pxy_id = int(query.data.replace("delete_pxy_", ""))
