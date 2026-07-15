@@ -468,6 +468,20 @@ def init_db():
             if not column_exists('proxies', 'rotation_url'):
                 cursor.execute("ALTER TABLE proxies ADD COLUMN rotation_url TEXT NULL")
                 conn.commit()
+
+            # ---------- التخزين المؤقت للأرقام المفحوصة ----------
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS checked_numbers_cache (
+                    phone VARCHAR(50) PRIMARY KEY,
+                    status VARCHAR(50) NOT NULL,
+                    status_text VARCHAR(255) NOT NULL,
+                    checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+            cursor.execute("DELETE FROM checked_numbers_cache WHERE checked_at < NOW() - INTERVAL '14 days'")
+            conn.commit()
+
         finally:
             cursor.close()
 
@@ -909,3 +923,27 @@ def toggle_proxy(proxy_id, is_active):
     """تفعيل أو تعطيل بروكسي."""
     db_execute("UPDATE proxies SET is_active = %s WHERE id = %s", (is_active, proxy_id))
 
+
+# ---------- التخزين المؤقت للأرقام المفحوصة (Cache) ----------
+
+def get_cached_number(phone):
+    """البحث عن رقم في التخزين المؤقت وإرجاع نتيجته إذا لم يمر عليها 14 يوم"""
+    row = db_execute("""
+        SELECT status, status_text 
+        FROM checked_numbers_cache 
+        WHERE phone = %s AND checked_at >= NOW() - INTERVAL '14 days'
+    """, (phone,), commit=False, fetch='one')
+    if row:
+        return {"status": row[0], "phone": phone, "status_text": row[1]}
+    return None
+
+def save_cached_number(phone, status, status_text):
+    """حفظ أو تحديث نتيجة فحص رقم في التخزين المؤقت"""
+    db_execute("""
+        INSERT INTO checked_numbers_cache (phone, status, status_text, checked_at)
+        VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (phone) DO UPDATE 
+        SET status = EXCLUDED.status, 
+            status_text = EXCLUDED.status_text, 
+            checked_at = EXCLUDED.checked_at
+    """, (phone, status, status_text))

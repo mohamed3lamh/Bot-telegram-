@@ -253,303 +253,94 @@ class SmartCheckStrategy:
                         if hasattr(self, "_shadowban_strikes") and account["id"] in self._shadowban_strikes:
                             self._shadowban_strikes[account["id"]] = 0
 
-        # --- الطبقة الثالثة (البديلة): بوت فحص خارجي ---
-        checker_bot = await asyncio.to_thread(db.get_setting, "checker_bot_username")
-        if checker_bot:
-            logger.info(f"[Layer 3: ExternalBot] Checking {phone} via @{checker_bot}...")
-            ext_result = await self._check_via_external_bot(client, phone, checker_bot)
-            if ext_result is not None:
-                return ext_result
-            logger.warning(f"[Layer 3: ExternalBot] Failed. Falling back to SendCode...")
-
-        # --- الطبقة الثالثة: فحص التدفق بالكود التجريبي (send_code_request) ---
-        # يستخدم بروكسي من دولة الرقم لضمان الدقة وتجنب حماية تيليجرام المضادة للبوتات
-        logger.info(f"[Layer 3: SendCode] Running send_code_request for {phone}")
-
-        session_id = f"check_{phone}_{int(time.time())}"
-        proxy_tuple = await proxy_manager.get_proxy_for_telegram(phone, session_id)
-        proxy_client = None
-        active_client = client  # الافتراضي: العميل الحالي بدون بروكسي
-        used_proxy = False
-
-        if proxy_tuple is not None:
-            logger.info(f"[Layer 3] Proxy found. Connecting via proxy...")
-            try:
-                proxy_client = await telegram_client_manager.get_client(account, proxy=proxy_tuple)
-                active_client = proxy_client
-                used_proxy = True
-                logger.info(f"[Layer 3] Proxy client connected successfully for {phone}.")
-            except Exception as proxy_err:
-                logger.warning(f"[Layer 3] Proxy connection failed ({proxy_err}). Falling back to direct connection.")
-                proxy_client = None
-                active_client = client
-                used_proxy = False
-        else:
-            logger.info(f"[Layer 3] No proxy found or available. Using direct connection.")
-
+        # --- الطبقة الثالثة: فحص التدفق بالكود التجريبي (send_code_request) مجاني ومباشر ---
+        logger.info(f"[Layer 3: SendCode] Running direct send_code_request for {phone}")
         is_success = False
         is_flood = False
         try:
-            # التأكد من أن العميل متصل بنجاح قبل إرسال الطلب
-            if not active_client.is_connected():
-                logger.info(f"[Layer 3] Client disconnected for {phone}. Reconnecting...")
-                await active_client.connect()
+            if not client.is_connected():
+                await client.connect()
 
+            result = await client(functions.auth.SendCodeRequest(
+                phone_number=phone,
+                api_id=int(account["api_id"]),
+                api_hash=account["api_hash"],
+                settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
+            ))
+            
+            # إلغاء الكود فوراً
             try:
-                # نرسل طلب توليد كود. تيليجرام سيفحص أولاً إذا كان الرقم له حساب نشط
-                result = await active_client(functions.auth.SendCodeRequest(
-                    phone_number=phone,
-                    api_id=int(account["api_id"]),
-                    api_hash=account["api_hash"],
-                    settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
-                ))
-            except PhoneMigrateError:
-                raise
-            except Exception as send_err:
-                # إذا فشل إرسال الطلب عبر البروكسي (بسبب انقطاع اتصاله أو تعطل البروكسي)
-                # نحاول عمل Rotation للبروكسي إذا كان مدعوماً
-                if used_proxy:
-                    logger.warning(f"[Layer 3] Request via proxy failed for {phone} ({send_err}). Trying IP rotation...")
-                    rotated = await proxy_manager.trigger_rotation(session_id)
-                    if rotated:
-                        # إعادة إنشاء العميل بالبروكسي الجديد ومحاولة الاتصال مرة أخرى
-                        try:
-                            if proxy_client is not None:
-                                await proxy_client.disconnect()
-                            proxy_client = await telegram_client_manager.get_client(account, proxy=proxy_tuple)
-                            active_client = proxy_client
-                            if not active_client.is_connected():
-                                await active_client.connect()
-                            result = await active_client(functions.auth.SendCodeRequest(
-                                phone_number=phone,
-                                api_id=int(account["api_id"]),
-                                api_hash=account["api_hash"],
-                                settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
-                            ))
-                            logger.info(f"[Layer 3] Request succeeded after proxy IP rotation.")
-                        except Exception as retry_err:
-                            logger.warning(f"[Layer 3] Retry after proxy rotation failed: {retry_err}. Falling back to direct.")
-                            used_proxy = False
-                            active_client = client
-                            if not active_client.is_connected():
-                                await active_client.connect()
-                            result = await active_client(functions.auth.SendCodeRequest(
-                                phone_number=phone,
-                                api_id=int(account["api_id"]),
-                                api_hash=account["api_hash"],
-                                settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
-                            ))
-                    else:
-                        logger.warning(f"[Layer 3] Rotation not supported or failed. Falling back to direct connection...")
-                        if proxy_client is not None:
-                            try:
-                                await proxy_client.disconnect()
-                            except Exception:
-                                pass
-                            proxy_client = None
-                        active_client = client
-                        used_proxy = False
-                        if not active_client.is_connected():
-                            await active_client.connect()
-                        result = await active_client(functions.auth.SendCodeRequest(
-                            phone_number=phone,
-                            api_id=int(account["api_id"]),
-                            api_hash=account["api_hash"],
-                            settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
-                        ))
-                else:
-                    raise send_err
-
-            code_type = type(result.type)
-            logger.info(f"[Layer 3] Response code type for {phone}: {code_type.__name__} (via {'proxy' if used_proxy else 'direct'})")
-
-
-
-            # إلغاء الكود فوراً لمنع وصوله للمستهدف
-            try:
-                await active_client(functions.auth.CancelCodeRequest(
+                await client(functions.auth.CancelCodeRequest(
                     phone_number=phone,
                     phone_code_hash=result.phone_code_hash
                 ))
-                logger.info(f"[Layer 3] Cancelled verification code for {phone} successfully.")
-            except Exception as cancel_err:
-                logger.warning(f"[Layer 3] CancelCodeRequest failed (safe to ignore): {cancel_err}")
-
-            is_success = True
-
-            # --- تحليل النتيجة بدقة ---
-            if used_proxy:
-                # عند الاتصال عبر proxy مطابق لدولة الرقم:
-                # SentCodeTypeApp → مسجل بجلسة نشطة
-                # SentCodeTypeEmailCode → مسجل بدون جلسة (يُرسل للبريد)
-                # SentCodeTypeSms/Flash/MissedCall → مسجل بدون جلسة نشطة (يُرسل SMS)
-                # نتائج دقيقة 100% لأن الـ proxy يمنع حماية تيليجرام المضادة
-                if code_type == SentCodeTypeApp:
-                    logger.info(f"[Layer 3+Proxy] App code → Registered with active session. (Phone: {phone})")
-                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
-                elif code_type == SentCodeTypeEmailCode:
-                    logger.info(f"[Layer 3+Proxy] Email code → Registered (no active session). (Phone: {phone})")
-                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
-                else:
-                    # SMS / FlashCall / MissedCall عبر proxy = مسجل بدون جلسة تطبيق
-                    logger.info(f"[Layer 3+Proxy] SMS/Flash code → Registered (no app session). (Phone: {phone})")
-                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
+            except Exception:
+                pass
+            
+            logger.info(f"[Layer 3] Direct connection returned code. Deferring to Layer 4 (External Bot).")
+            
+            # --- الطبقة الرابعة: بوت فحص خارجي ---
+            checker_bot = await asyncio.to_thread(db.get_setting, "checker_bot_username")
+            if checker_bot:
+                logger.info(f"[Layer 4: ExternalBot] Checking {phone} via @{checker_bot}...")
+                ext_result = await self._check_via_external_bot(client, phone, checker_bot)
+                if ext_result is not None:
+                    is_success = True
+                    return ext_result
+                logger.warning(f"[Layer 4: ExternalBot] Failed to get clear response.")
+                return {"status": "INACCURATE", "phone": phone, "status_text": "⚠️ فحص ليس دقيق (فشل البوت الخارجي)"}
             else:
-                # بدون proxy: بما أن خوادم تيليجرام تخدع الفاحص وتعيد SentCodeTypeApp دائماً،
-                # سنقوم بمراجعة نتائج الطبقة الأولى والثانية بدلاً من الافتراض الأعمى أنه غير مسجل.
-                if layer_results.get("layer1") == "HAS_SESSION" or layer_results.get("layer2") == "HAS_SESSION":
-                    logger.info(f"[Layer 3] Direct connection returned code, but Layer 1/2 confirmed it's registered. Returning HAS_SESSION. (Phone: {phone})")
-                    return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
-                else:
-                    logger.info(f"[Layer 3] Direct connection returned code, and previous layers didn't find it. Cannot determine accuracy. (Phone: {phone})")
-                    return {"status": "INACCURATE", "phone": phone, "status_text": "⚠️ فحص ليس دقيق"}
+                logger.warning(f"[Layer 4: ExternalBot] Not configured. Cannot determine accuracy.")
+                return {"status": "INACCURATE", "phone": phone, "status_text": "⚠️ فحص ليس دقيق (يرجى ربط بوت خارجي)"}
 
         except PhoneNumberUnoccupiedError:
             logger.info(f"[Layer 3] Unoccupied error. Phone is Not Registered. (Phone: {phone})")
             is_success = True
-            return {
-                "status": "NO_SESSION",
-                "phone": phone,
-                "status_text": "🆕 غير مسجل"
-            }
+            return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
 
         except PhoneNumberBannedError:
             logger.info(f"[Layer 3] Banned error. Phone is Banned. (Phone: {phone})")
             is_success = True
-            return {
-                "status": "BANNED",
-                "phone": phone,
-                "status_text": "📵 مـحـظـور"
-            }
+            return {"status": "BANNED", "phone": phone, "status_text": "📵 مـحـظـور"}
 
         except PhoneNumberInvalidError:
             logger.info(f"[Layer 3] Invalid phone. Phone is Not Registered. (Phone: {phone})")
             is_success = True
-            return {
-                "status": "NO_SESSION",
-                "phone": phone,
-                "status_text": "🆕 غير مسجل"
-            }
+            return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
 
         except FloodWaitError as e:
             await flood_manager.set_flood(account["id"], e.seconds)
             logger.warning(f"[Layer 3] FloodWait: {e.seconds} seconds on checker.")
             is_flood = True
-            return {
-                "status": "FLOOD_WAIT",
-                "seconds": e.seconds,
-                "phone": phone,
-                "status_text": f"🚫 حظر مؤقت {e.seconds} ثانية"
-            }
+            return {"status": "FLOOD_WAIT", "seconds": e.seconds, "phone": phone, "status_text": f"🚫 حظر مؤقت {e.seconds} ثانية"}
 
         except SessionPasswordNeededError:
-            # إذا طلب الباسورد، فهذا يعني أن الحساب موجود ومحمي بالتحقق بخطوتين -> مسجل قطعا
             logger.info(f"[Layer 3] Session password needed! Phone is Registered. (Phone: {phone})")
             is_success = True
-            return {
-                "status": "HAS_SESSION",
-                "phone": phone,
-                "status_text": "⚠️ الرقم لديه جلسة"
-            }
+            return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
         except PhoneMigrateError as e:
-            # الرقم مسجل في DC مختلف عن DC الفاحص الحالي → ننتقل للـ DC الصحيح ونُعيد المحاولة
-            logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Re-routing and retrying send_code... (Phone: {phone})")
+            logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Re-routing...")
             try:
-                await active_client._switch_dc(e.new_dc)
+                await client._switch_dc(e.new_dc)
                 await asyncio.sleep(0.5)
-
-                result2 = await active_client(functions.auth.SendCodeRequest(
-                    phone_number=phone,
-                    api_id=int(account["api_id"]),
-                    api_hash=account["api_hash"],
-                    settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
-                ))
-                code_type2 = type(result2.type)
-                logger.info(f"[Layer 3] After DC migration: code type = {code_type2.__name__} (Phone: {phone})")
-
-                # إلغاء الكود فوراً بعد الانتقال أيضاً
-                try:
-                    await active_client(functions.auth.CancelCodeRequest(
-                        phone_number=phone,
-                        phone_code_hash=result2.phone_code_hash
-                    ))
-                    logger.info(f"[Layer 3] Cancelled code after DC migration for {phone}.")
-                except Exception as cancel_err:
-                    logger.warning(f"[Layer 3] CancelCodeRequest after migration failed (safe): {cancel_err}")
-
-                is_success = True
-                
-                # أي نوع كود (App / Email / SMS / Flash) يُثبت أن الرقم مسجل
-                if used_proxy:
-                    if code_type2 in (SentCodeTypeApp, SentCodeTypeEmailCode):
-                        logger.info(f"[Layer 3+Proxy] After DC migration: App/Email → Registered. (Phone: {phone})")
-                    else:
-                        logger.info(f"[Layer 3+Proxy] After DC migration: SMS/Flash → Registered (no active app session). (Phone: {phone})")
-                    return {
-                        "status": "HAS_SESSION",
-                        "phone": phone,
-                        "status_text": "⚠️ الرقم لديه جلسة"
-                    }
-                else:
-                    if layer_results.get("layer1") == "HAS_SESSION" or layer_results.get("layer2") == "HAS_SESSION":
-                        logger.info(f"[Layer 3] After DC migration (Direct connection) returned code, but Layer 1/2 confirmed it's registered. Returning HAS_SESSION. (Phone: {phone})")
-                        return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
-                    else:
-                        logger.info(f"[Layer 3] After DC migration (Direct connection) returned code, and previous layers didn't find it. Cannot determine accuracy. (Phone: {phone})")
-                        return {"status": "INACCURATE", "phone": phone, "status_text": "⚠️ فحص ليس دقيق"}
-
-            except PhoneNumberBannedError:
-                logger.info(f"[Layer 3] After DC migration: Phone is Banned. (Phone: {phone})")
-                is_success = True
-                return {"status": "BANNED", "phone": phone, "status_text": "📵 مـحـظـور"}
-
-            except PhoneNumberUnoccupiedError:
-                logger.info(f"[Layer 3] After DC migration: Phone is Not Registered. (Phone: {phone})")
-                is_success = True
-                return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
-
-            except FloodWaitError as fe:
-                await flood_manager.set_flood(account["id"], fe.seconds)
-                logger.warning(f"[Layer 3] FloodWait after DC migration: {fe.seconds}s. (Phone: {phone})")
-                is_flood = True
-                return {"status": "FLOOD_WAIT", "seconds": fe.seconds, "phone": phone, "status_text": f"🚫 حظر مؤقت {fe.seconds} ثانية"}
-
+                # Re-run Layer 3 (Recursive call or retry block)
+                # For simplicity, we just return error to let it be retried by the system later or we can re-throw
+                return {"status": "ERROR", "phone": phone, "status_text": f"🔄 انتقال لـ DC {e.new_dc} - سيتم فحصه مجدداً"}
             except Exception as migrate_err:
-                logger.error(f"[Layer 3] DC migration failed for {phone}: {migrate_err}")
                 return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل الانتقال لـ DC {e.new_dc}"}
 
         except Exception as e:
             error_str = str(e).upper()
             logger.error(f"[Layer 3] Unexpected exception for {phone}: {e}")
-            
             if any(kw in error_str for kw in ["UNOCCUPIED", "NO USER", "NOT FOUND", "NOT_FOUND"]):
-                is_success = True
                 return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
             if "BANNED" in error_str:
-                is_success = True
                 return {"status": "BANNED", "phone": phone, "status_text": "📵 مـحـظـور"}
             if "AUTH_KEY" in error_str:
                 await account_manager.disable_account(account["id"])
-                return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
-
-            # كخيار أمان أخير لمنع تصنيف الأخطاء العشوائية كغير مسجل
-            return {
-                "status": "ERROR",
-                "phone": phone,
-                "status_text": f"⚙️ خطأ نظام: {e}"
-            }
-
-        finally:
-            # تحرير البروكسي وإرسال إحصائيات الجودة
-            await proxy_manager.release_proxy(session_id, is_success, is_flood)
-
-            # إغلاق عميل البروكسي المؤقت بعد انتهاء الفحص لتجنب تسرب الاتصالات
-            if proxy_client is not None:
-                try:
-                    await proxy_client.disconnect()
-                except Exception:
-                    pass
+                return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف"}
+            return {"status": "ERROR", "phone": phone, "status_text": f"⚙️ خطأ نظام: {e}"}
 
 
 
@@ -562,6 +353,12 @@ class TelegramCheckEngine:
         self.strategy = SmartCheckStrategy()
 
     async def check_phone(self, account, phone):
+        import database as db
+        cached = await asyncio.to_thread(db.get_cached_number, phone)
+        if cached:
+            logger.info(f"Returning cached result for {phone}: {cached['status']}")
+            return cached
+
         t_start = time.perf_counter()
         logger.info(f"Starting check for {phone} using checker {account.get('id')}")
 
@@ -586,6 +383,10 @@ class TelegramCheckEngine:
             }
 
         res = await self.strategy.check(client, phone, account)
+        
+        if res and res.get("status") in ["HAS_SESSION", "NO_SESSION", "BANNED"]:
+            await asyncio.to_thread(db.save_cached_number, res["phone"], res["status"], res["status_text"])
+            
         if res and res.get("status") not in ["FLOOD_WAIT", "ACCOUNT_DISABLED", "ERROR"]:
             try:
                 await flood_manager.account_used(account["id"])
