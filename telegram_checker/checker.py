@@ -292,9 +292,11 @@ class SmartCheckStrategy:
                     if account["id"] != manager_account_id:
                         accounts = await account_manager.get_all_accounts()
                         manager_account = next((acc for acc in accounts if acc["id"] == manager_account_id), None)
-                        if manager_account and manager_account.get("status") == "active":
+                        if manager_account and manager_account.get("is_active"):
                             try:
                                 ext_client = await telegram_client_manager.get_client(manager_account)
+                                if not ext_client.is_connected():
+                                    await ext_client.connect()
                                 logger.info(f"[Layer 4: ExternalBot] Handed off to Manager Account ID: {manager_account_id}")
                             except Exception as e:
                                 logger.error(f"[Layer 4: ExternalBot] Failed to get manager client: {e}. Falling back to current worker.")
