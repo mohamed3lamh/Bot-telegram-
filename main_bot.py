@@ -763,14 +763,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "adm_checker_bot":
             context.user_data["admin_action"] = "set_checker_bot"
             await query.message.reply_text(
-                "🤖 **نظام ربط بوت فحص خارجي**
-
-"
-                "الرجاء إرسال معرف البوت. مثال:
-"
-                "`SessionCheckerReBoT`
-
-"
+                "🤖 **نظام ربط بوت فحص خارجي**\n\n"
+                "الرجاء إرسال معرف البوت. مثال:\n"
+                "`SessionCheckerReBoT`\n\n"
                 "لإلغاء التفعيل أرسل: `off`",
                 parse_mode="Markdown"
             )
@@ -782,18 +777,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 import database as db
                 from telegram_checker.account_manager import account_manager
                 accounts = await account_manager.get_all_accounts()
-                msg = "👑 **تخصيص حساب المدير للطبقة الرابعة**
-
-"
-                msg += "هذا الحساب سيتولى حصرياً مراسلة البوت الخارجي.
-"
-                msg += "الحسابات المتاحة:
-"
+                msg = "👑 **تخصيص حساب المدير للطبقة الرابعة**\n\n"
+                msg += "هذا الحساب سيتولى حصرياً مراسلة البوت الخارجي.\n"
+                msg += "الحسابات المتاحة:\n"
                 for acc in accounts:
-                    msg += f"ID: `{acc['id']}` - Number: {acc['phone_number']}
-"
-                msg += "
-الرجاء إرسال ID الحساب المطلوب كمدير، أو أرسل `off` لتعطيل الميزة وجعل أي حساب يراسل البوت."
+                    msg += f"ID: `{acc['id']}` - Number: {acc['phone_number']}\n"
+                msg += "\nالرجاء إرسال ID الحساب المطلوب كمدير، أو أرسل `off` لتعطيل الميزة وجعل أي حساب يراسل البوت."
                 await query.message.reply_text(msg, parse_mode="Markdown")
             except Exception as e:
                 await query.message.reply_text(f"خطأ: {e}")
