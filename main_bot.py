@@ -246,6 +246,17 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text("❌ يرجى إرسال أرقام فقط (ID الحساب).")
             context.user_data.pop("admin_action", None)
             return
+        elif action == "set_honeypot":
+            phone = text.strip()
+            if phone.lower() == "off":
+                await asyncio.to_thread(db.set_setting, "honeypot_number", "")
+                await update.message.reply_text("❌ تم تعطيل رقم الفخ بنجاح.")
+            else:
+                await asyncio.to_thread(db.set_setting, "honeypot_number", phone)
+                await update.message.reply_text(f"✅ تم حفظ رقم الفخ بنجاح: {phone}\n\nسيقوم البوت الآن بفحص هذا الرقم تلقائياً لاختبار الحسابات التي تدعي عدم وجود أرقام الصيد للتأكد من سلامتها من حظر الظل.")
+            context.user_data.pop("admin_action", None)
+            return
+
 
     status_msg = await update.message.reply_text("⏳ جاري التحقق من صحة التوكن المرسل وحفظه...")
     is_valid = await bot_manager.validate_token(text)
@@ -361,7 +372,9 @@ async def show_admin_panel(update: Update):
         [
             InlineKeyboardButton("👑 تخصيص حساب المدير (Layer 4)", callback_data="adm_set_manager_acc")
         ],
-
+        [
+            InlineKeyboardButton("🎯 إعداد رقم الفخ (Honeypot)", callback_data="adm_set_honeypot")
+        ],
         [
             InlineKeyboardButton("⬅️ الواجهة الرئيسية", callback_data="main_menu")
         ]
@@ -786,6 +799,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text(msg, parse_mode="Markdown")
             except Exception as e:
                 await query.message.reply_text(f"خطأ: {e}")
+            return
+        elif query.data == "adm_set_honeypot":
+            context.user_data["admin_action"] = "set_honeypot"
+            await query.message.reply_text(
+                "🎯 **إعداد رقم الفخ (Honeypot)**\n\n"
+                "الرجاء إرسال الرقم الذي تريد استخدامه كفخ لاختبار جودة الحسابات الفاحصة وكشف حظر الظل. مثال:\n"
+                "`+123456789`\n\n"
+                "لإلغاء التفعيل أرسل: `off`",
+                parse_mode="Markdown"
+            )
             return
         elif query.data.startswith("delete_pxy_"):
             pxy_id = int(query.data.replace("delete_pxy_", ""))
