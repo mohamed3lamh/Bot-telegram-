@@ -31,7 +31,43 @@ class SmartCheckStrategy:
     2. الطبقة الثانية: فحص الخادم المباشر وتحديد الخصوصية (ResolvePhoneRequest) - لمعالجة قيود الخصوصية والتفريق الدقيق.
     3. الطبقة الثالثة: فحص التدفق بالكود التجريبي (send_code_request) - الملاذ الأخير الحاسم لتحديد وجود التطبيق (App vs SMS) مع إلغاء الكود فوراً وبشكل حاسم لتجنب إرسال أي رسالة للمستهدف.
     """
+    async def _check_via_external_bot(self, client, phone, bot_username):
+        """فحص الرقم عبر بوت فحص خارجي عبر رسائل تيليجرام المباشرة"""
+        try:
+            bot_entity = await client.get_entity(bot_username)
+            before_send = datetime.datetime.now(datetime.timezone.utc)
+            await client.send_message(bot_entity, phone)
+            logger.info(f"[ExternalBot] Sent {phone} to {bot_username}, waiting for response...")
+
+            for _ in range(45):  # انتظار حتى 45 ثانية
+                await asyncio.sleep(1)
+                messages = await client.get_messages(bot_entity, limit=3)
+                for msg in messages:
+                    if msg.out:
+                        continue
+                    if msg.date >= before_send and '📊' in (msg.text or ''):
+                        reply = msg.text
+                        if '🔐' in reply:
+                            logger.info(f"[ExternalBot] ✅ Result: REGISTERED (Phone: {phone})")
+                            return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
+                        elif '✅' in reply:
+                            logger.info(f"[ExternalBot] ✅ Result: NOT REGISTERED (Phone: {phone})")
+                            return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
+                        elif '❌' in reply:
+                            logger.info(f"[ExternalBot] ✅ Result: BANNED (Phone: {phone})")
+                            return {"status": "BANNED", "phone": phone, "status_text": "📵 مـحـظـور"}
+                        elif '🔴' in reply:
+                            logger.warning(f"[ExternalBot] Bot returned ERROR for {phone}")
+                            return None
+
+            logger.warning(f"[ExternalBot] Timeout waiting for response (Phone: {phone})")
+            return None
+        except Exception as e:
+            logger.warning(f"[ExternalBot] Error: {e}")
+            return None
+
     async def check(self, client, phone, account):
+        import database as db
         # تجميع نتائج الطبقات لضمان عدم حدوث تضارب في النتيجة النهائية
         layer_results = {}
 
@@ -164,7 +200,6 @@ class SmartCheckStrategy:
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
 
         # --- اختبار الفخ (Honeypot Test) لتأكيد حظر الظل ---
-        import database as db
         honeypot_number = await asyncio.to_thread(db.get_setting, "honeypot_number")
         if honeypot_number and layer_results.get("layer1") == "NO_SESSION" and layer_results.get("layer2") == "NO_SESSION":
             if phone != honeypot_number:
@@ -217,6 +252,15 @@ class SmartCheckStrategy:
                         # تصفير المخالفات إذا تعافى الحساب
                         if hasattr(self, "_shadowban_strikes") and account["id"] in self._shadowban_strikes:
                             self._shadowban_strikes[account["id"]] = 0
+
+        # --- الطبقة الثالثة (البديلة): بوت فحص خارجي ---
+        checker_bot = await asyncio.to_thread(db.get_setting, "checker_bot_username")
+        if checker_bot:
+            logger.info(f"[Layer 3: ExternalBot] Checking {phone} via @{checker_bot}...")
+            ext_result = await self._check_via_external_bot(client, phone, checker_bot)
+            if ext_result is not None:
+                return ext_result
+            logger.warning(f"[Layer 3: ExternalBot] Failed. Falling back to SendCode...")
 
         # --- الطبقة الثالثة: فحص التدفق بالكود التجريبي (send_code_request) ---
         # يستخدم بروكسي من دولة الرقم لضمان الدقة وتجنب حماية تيليجرام المضادة للبوتات

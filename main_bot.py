@@ -51,6 +51,22 @@ async def set_honeypot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await asyncio.to_thread(db.set_setting, "honeypot_number", phone)
     await update.message.reply_text(f"✅ تم حفظ رقم الفخ بنجاح: {phone}\n\nسيقوم البوت الآن بفحص هذا الرقم تلقائياً لاختبار الحسابات التي تدعي عدم وجود أرقام الصيد للتأكد من سلامتها من حظر الظل.")
 
+async def set_checker_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if ADMIN_ID == 0 or user_id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("الرجاء إرسال معرف البوت. مثال:\n/set_checker_bot SessionCheckerReBoT\n\nلإلغاء التفعيل أرسل: /set_checker_bot off")
+        return
+    bot_username = context.args[0].replace("@", "")
+    if bot_username.lower() == "off":
+        await asyncio.to_thread(db.set_setting, "checker_bot_username", "")
+        await update.message.reply_text("❌ تم تعطيل الربط مع بوت الفحص الخارجي.")
+    else:
+        await asyncio.to_thread(db.set_setting, "checker_bot_username", bot_username)
+        await update.message.reply_text(f"✅ تم تفعيل الربط مع البوت: @{bot_username}")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name
@@ -1044,6 +1060,7 @@ async def main():
 
     main_app.add_handler(CommandHandler("start", start))
     main_app.add_handler(CommandHandler("set_honeypot", set_honeypot))
+    main_app.add_handler(CommandHandler("set_checker_bot", set_checker_bot))
     main_app.add_handler(CommandHandler("admin", admin_command))
     main_app.add_handler(CallbackQueryHandler(button_handler))
 
