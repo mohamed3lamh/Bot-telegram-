@@ -34,14 +34,13 @@ class SmartCheckStrategy:
     async def _check_via_external_bot(self, client, phone, bot_username):
         """فحص الرقم عبر بوت فحص خارجي عبر رسائل تيليجرام المباشرة"""
         try:
-            bot_entity = await client.get_entity(bot_username)
             before_send = datetime.datetime.now(datetime.timezone.utc)
-            await client.send_message(bot_entity, phone)
+            await client.send_message(bot_username, phone)
             logger.info(f"[ExternalBot] Sent {phone} to {bot_username}, waiting for response...")
 
             for _ in range(45):  # انتظار حتى 45 ثانية
                 await asyncio.sleep(1)
-                messages = await client.get_messages(bot_entity, limit=3)
+                messages = await client.get_messages(bot_username, limit=3)
                 for msg in messages:
                     if msg.out:
                         continue
@@ -63,7 +62,7 @@ class SmartCheckStrategy:
             logger.warning(f"[ExternalBot] Timeout waiting for response (Phone: {phone})")
             return None
         except Exception as e:
-            logger.warning(f"[ExternalBot] Error: {e}")
+            logger.error(f"[ExternalBot] Failed to communicate with bot {bot_username}: {type(e).__name__} - {e}")
             return None
 
     async def check(self, client, phone, account):
