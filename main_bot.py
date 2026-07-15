@@ -794,7 +794,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += "هذا الحساب سيتولى حصرياً مراسلة البوت الخارجي.\n"
                 msg += "الحسابات المتاحة:\n"
                 for acc in accounts:
-                    msg += f"ID: `{acc['id']}` - Number: {acc['phone_number']}\n"
+                    msg += f"ID: `{acc['id']}` - Number: {acc['phone']}\n"
                 msg += "\nالرجاء إرسال ID الحساب المطلوب كمدير، أو أرسل `off` لتعطيل الميزة وجعل أي حساب يراسل البوت."
                 await query.message.reply_text(msg, parse_mode="Markdown")
             except Exception as e:
