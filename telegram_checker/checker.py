@@ -34,13 +34,22 @@ class SmartCheckStrategy:
     async def _check_via_external_bot(self, client, phone, bot_username):
         """فحص الرقم عبر بوت فحص خارجي عبر رسائل تيليجرام المباشرة"""
         try:
+            bot_username_clean = bot_username.replace('@', '')
+            from telethon import functions
+            try:
+                bot_entity = await client.get_input_entity(bot_username_clean)
+            except ValueError:
+                logger.info(f"[ExternalBot] Resolving username {bot_username_clean} from server...")
+                result = await client(functions.contacts.ResolveUsernameRequest(bot_username_clean))
+                bot_entity = result.users[0]
+
             before_send = datetime.datetime.now(datetime.timezone.utc)
-            await client.send_message(bot_username, phone)
+            await client.send_message(bot_entity, phone)
             logger.info(f"[ExternalBot] Sent {phone} to {bot_username}, waiting for response...")
 
             for _ in range(45):  # انتظار حتى 45 ثانية
                 await asyncio.sleep(1)
-                messages = await client.get_messages(bot_username, limit=3)
+                messages = await client.get_messages(bot_entity, limit=3)
                 for msg in messages:
                     if msg.out:
                         continue
@@ -56,13 +65,13 @@ class SmartCheckStrategy:
                             logger.info(f"[ExternalBot] ✅ Result: BANNED (Phone: {phone})")
                             return {"status": "BANNED", "phone": phone, "status_text": "📵 مـحـظـور"}
                         elif '🔴' in reply:
-                            logger.warning(f"[ExternalBot] Bot returned ERROR for {phone}")
+                            logger.info(f"[ExternalBot] Bot returned ERROR for {phone}")
                             return None
 
-            logger.warning(f"[ExternalBot] Timeout waiting for response (Phone: {phone})")
+            logger.info(f"[ExternalBot] Timeout waiting for response (Phone: {phone})")
             return None
         except Exception as e:
-            logger.error(f"[ExternalBot] Failed to communicate with bot {bot_username}: {type(e).__name__} - {e}")
+            logger.info(f"[ExternalBot] Failed to communicate with bot {bot_username}: {type(e).__name__} - {e}")
             return None
 
     async def check(self, client, phone, account):
