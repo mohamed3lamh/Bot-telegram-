@@ -340,11 +340,11 @@ class SmartCheckStrategy:
         except PhoneMigrateError as e:
             logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Re-routing...")
             try:
-                await client._switch_dc(e.new_dc)
+                await telegram_client_manager.disconnect_client(account["id"])
+                client2 = await telegram_client_manager.get_client(account)
+                await client2._switch_dc(e.new_dc)
                 await asyncio.sleep(0.5)
-                # Re-run Layer 3 (Recursive call or retry block)
-                # For simplicity, we just return error to let it be retried by the system later or we can re-throw
-                return {"status": "ERROR", "phone": phone, "status_text": f"🔄 انتقال لـ DC {e.new_dc} - سيتم فحصه مجدداً"}
+                return await self.check(client2, phone, account)
             except Exception as migrate_err:
                 return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل الانتقال لـ DC {e.new_dc}"}
 
