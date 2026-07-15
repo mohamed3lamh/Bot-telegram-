@@ -232,6 +232,20 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"✅ تم تفعيل الربط مع البوت: @{bot_username}")
             context.user_data.pop("admin_action", None)
             return
+        elif action == "set_manager_acc":
+            val = text.strip()
+            if val.lower() == "off":
+                await asyncio.to_thread(db.set_setting, "external_checker_account_id", "")
+                await update.message.reply_text("❌ تم تعطيل ميزة الحساب المدير. سيتم المراسلة من أي حساب فاحص متاح.")
+            else:
+                try:
+                    acc_id = int(val)
+                    await asyncio.to_thread(db.set_setting, "external_checker_account_id", str(acc_id))
+                    await update.message.reply_text(f"✅ تم تخصيص الحساب رقم `{acc_id}` ليكون حساب المدير (Layer 4).", parse_mode="Markdown")
+                except ValueError:
+                    await update.message.reply_text("❌ يرجى إرسال أرقام فقط (ID الحساب).")
+            context.user_data.pop("admin_action", None)
+            return
 
     status_msg = await update.message.reply_text("⏳ جاري التحقق من صحة التوكن المرسل وحفظه...")
     is_valid = await bot_manager.validate_token(text)
@@ -343,6 +357,9 @@ async def show_admin_panel(update: Update):
         ],
         [
             InlineKeyboardButton("🤖 ربط بوت فحص خارجي", callback_data="adm_checker_bot")
+        ],
+        [
+            InlineKeyboardButton("👑 تخصيص حساب المدير (Layer 4)", callback_data="adm_set_manager_acc")
         ],
 
         [
@@ -746,12 +763,40 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "adm_checker_bot":
             context.user_data["admin_action"] = "set_checker_bot"
             await query.message.reply_text(
-                "🤖 **نظام ربط بوت فحص خارجي**\n\n"
-                "الرجاء إرسال معرف البوت. مثال:\n"
-                "`SessionCheckerReBoT`\n\n"
+                "🤖 **نظام ربط بوت فحص خارجي**
+
+"
+                "الرجاء إرسال معرف البوت. مثال:
+"
+                "`SessionCheckerReBoT`
+
+"
                 "لإلغاء التفعيل أرسل: `off`",
                 parse_mode="Markdown"
             )
+            return
+        elif query.data == "adm_set_manager_acc":
+            context.user_data["admin_action"] = "set_manager_acc"
+            # Get all accounts to show IDs
+            try:
+                import database as db
+                from telegram_checker.account_manager import account_manager
+                accounts = await account_manager.get_all_accounts()
+                msg = "👑 **تخصيص حساب المدير للطبقة الرابعة**
+
+"
+                msg += "هذا الحساب سيتولى حصرياً مراسلة البوت الخارجي.
+"
+                msg += "الحسابات المتاحة:
+"
+                for acc in accounts:
+                    msg += f"ID: `{acc['id']}` - Number: {acc['phone_number']}
+"
+                msg += "
+الرجاء إرسال ID الحساب المطلوب كمدير، أو أرسل `off` لتعطيل الميزة وجعل أي حساب يراسل البوت."
+                await query.message.reply_text(msg, parse_mode="Markdown")
+            except Exception as e:
+                await query.message.reply_text(f"خطأ: {e}")
             return
         elif query.data.startswith("delete_pxy_"):
             pxy_id = int(query.data.replace("delete_pxy_", ""))
