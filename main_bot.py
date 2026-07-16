@@ -819,7 +819,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data.startswith("delete_chk_"):
             acc_id = int(query.data.replace("delete_chk_", ""))
             await asyncio.to_thread(db.delete_checker, acc_id)
-            await query.answer("🗑️ تم حذف الحساب الفاحص", show_alert=False)
             await show_checker_management(update)
             return
         elif query.data.startswith("toggle_chk_"):
@@ -871,7 +870,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data.startswith("delete_pxy_"):
             pxy_id = int(query.data.replace("delete_pxy_", ""))
             await asyncio.to_thread(db.delete_proxy, pxy_id)
-            await query.answer("🗑️ تم حذف البروكسي بنجاح", show_alert=False)
             await show_proxy_management(update)
             return
         elif query.data.startswith("toggle_pxy_"):

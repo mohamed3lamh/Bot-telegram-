@@ -448,7 +448,10 @@ class TelegramChecker:
                         try:
                             # محاولة تهيئة الاتصال بدون إثارة أخطاء
                             client = await telegram_client_manager.get_client(acc)
-                            if await client.is_user_authorized():
+                            if not client.is_connected():
+                                await client.connect()
+                            me = await client.get_me()
+                            if me:
                                 logger.info(f"[Auto-Recovery] Account {acc['phone']} is authorized! Recovering...")
                                 await account_manager.enable_account(acc["id"])
                         except SessionUnauthorizedError:
