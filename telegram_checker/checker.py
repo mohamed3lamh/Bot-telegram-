@@ -4,7 +4,9 @@ import logging
 import time
 import traceback
 import datetime
+import random
 from telethon import functions, types
+from telethon.tl.functions.auth import ExportAuthorizationRequest, ImportAuthorizationRequest
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
     SessionPasswordNeededError, PhoneNumberInvalidError,
@@ -100,9 +102,16 @@ class SmartCheckStrategy:
                 return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
         except PhoneMigrateError as e:
-            # مجرد تسجيل انتقال المركز وعدم إعادة توجيه الجلسة لأن ذلك يتلف الـ AuthKey
-            logger.info(f"[Layer 1] Phone migrate detected to DC {e.new_dc}. Skipping Layer 1...")
-            pass
+            logger.info(f"[Layer 1] Phone migrate detected to DC {e.new_dc}. Re-routing with Auth Export...")
+            try:
+                auth = await client(ExportAuthorizationRequest(dc_id=e.new_dc))
+                await client._switch_dc(e.new_dc)
+                await client(ImportAuthorizationRequest(id=auth.id, bytes=auth.bytes))
+                await asyncio.sleep(0.5)
+                return await self.check(client, phone, account)
+            except Exception as migrate_error:
+                logger.error(f"Migration error: {migrate_error}")
+                return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل الانتقال لـ DC {e.new_dc}"}
 
         except FloodWaitError as e:
             await flood_manager.set_flood(account["id"], e.seconds)
@@ -340,8 +349,16 @@ class SmartCheckStrategy:
             return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
         except PhoneMigrateError as e:
-            logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Deferring to Layer 4 (External Bot).")
-            pass
+            logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Re-routing with Auth Export...")
+            try:
+                auth = await client(ExportAuthorizationRequest(dc_id=e.new_dc))
+                await client._switch_dc(e.new_dc)
+                await client(ImportAuthorizationRequest(id=auth.id, bytes=auth.bytes))
+                await asyncio.sleep(0.5)
+                return await self.check(client, phone, account)
+            except Exception as migrate_err:
+                logger.error(f"Migration error in Layer 3: {migrate_err}")
+                return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل الانتقال لـ DC {e.new_dc}"}
 
         except Exception as e:
             error_str = str(e).upper()
