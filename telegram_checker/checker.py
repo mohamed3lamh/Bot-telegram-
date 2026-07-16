@@ -100,17 +100,9 @@ class SmartCheckStrategy:
                 return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
         except PhoneMigrateError as e:
-            # معالجة فورية لانتقال مركز البيانات
-            logger.info(f"[Layer 1] Phone migrate detected to DC {e.new_dc}. Re-routing...")
-            try:
-                await telegram_client_manager.disconnect_client(account["id"])
-                client2 = await telegram_client_manager.get_client(account)
-                await client2._switch_dc(e.new_dc)
-                await asyncio.sleep(0.5)
-                return await self.check(client2, phone, account)
-            except Exception as migrate_error:
-                logger.error(f"Migration error: {migrate_error}")
-                return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل الانتقال لـ DC {e.new_dc}"}
+            # مجرد تسجيل انتقال المركز وعدم إعادة توجيه الجلسة لأن ذلك يتلف الـ AuthKey
+            logger.info(f"[Layer 1] Phone migrate detected to DC {e.new_dc}. Skipping Layer 1...")
+            pass
 
         except FloodWaitError as e:
             await flood_manager.set_flood(account["id"], e.seconds)
@@ -348,15 +340,8 @@ class SmartCheckStrategy:
             return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
         except PhoneMigrateError as e:
-            logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Re-routing...")
-            try:
-                await telegram_client_manager.disconnect_client(account["id"])
-                client2 = await telegram_client_manager.get_client(account)
-                await client2._switch_dc(e.new_dc)
-                await asyncio.sleep(0.5)
-                return await self.check(client2, phone, account)
-            except Exception as migrate_err:
-                return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل الانتقال لـ DC {e.new_dc}"}
+            logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Deferring to Layer 4 (External Bot).")
+            pass
 
         except Exception as e:
             error_str = str(e).upper()
