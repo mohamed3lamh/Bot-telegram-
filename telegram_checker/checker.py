@@ -102,16 +102,8 @@ class SmartCheckStrategy:
                 return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
         except PhoneMigrateError as e:
-            logger.info(f"[Layer 1] Phone migrate detected to DC {e.new_dc}. Re-routing with Auth Export...")
-            try:
-                auth = await client(ExportAuthorizationRequest(dc_id=e.new_dc))
-                await client._switch_dc(e.new_dc)
-                await client(ImportAuthorizationRequest(id=auth.id, bytes=auth.bytes))
-                await asyncio.sleep(0.5)
-                return await self.check(client, phone, account)
-            except Exception as migrate_error:
-                logger.error(f"Migration error: {migrate_error}")
-                return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل الانتقال لـ DC {e.new_dc}"}
+            logger.info(f"[Layer 1] Phone migrate detected to DC {e.new_dc}. Skipping Layer 1 to avoid bouncing back to Home DC.")
+            pass
 
         except FloodWaitError as e:
             await flood_manager.set_flood(account["id"], e.seconds)
@@ -349,13 +341,33 @@ class SmartCheckStrategy:
             return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
         except PhoneMigrateError as e:
-            logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Re-routing with Auth Export...")
+            logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Creating temporary connection to foreign DC...")
+            from telethon import TelegramClient
+            from telethon.sessions import StringSession
+            from telethon.tl.functions.auth import ExportAuthorizationRequest, ImportAuthorizationRequest
             try:
                 auth = await client(ExportAuthorizationRequest(dc_id=e.new_dc))
-                await client._switch_dc(e.new_dc)
-                await client(ImportAuthorizationRequest(id=auth.id, bytes=auth.bytes))
-                await asyncio.sleep(0.5)
-                return await self.check(client, phone, account)
+                temp_client = TelegramClient(StringSession(), client.api_id, client.api_hash)
+                await temp_client.connect()
+                await temp_client._switch_dc(e.new_dc)
+                await temp_client(ImportAuthorizationRequest(id=auth.id, bytes=auth.bytes))
+                logger.info(f"[Layer 3] Running direct send_code_request on foreign DC {e.new_dc}")
+                try:
+                    await temp_client(functions.auth.SendCodeRequest(
+                        phone_number=phone,
+                        api_id=temp_client.api_id,
+                        api_hash=temp_client.api_hash,
+                        settings=types.CodeSettings()
+                    ))
+                    logger.info(f"[Layer 3] Code sent on foreign DC. Deferring to Layer 4 (External Bot).")
+                except PhoneNumberUnoccupiedError:
+                    return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
+                except PhoneNumberBannedError:
+                    return {"status": "BANNED", "phone": phone, "status_text": "📵 مـحـظـور"}
+                except Exception as inner_e:
+                    logger.warning(f"[Layer 3] Temp client check returned: {inner_e}")
+                finally:
+                    await temp_client.disconnect()
             except Exception as migrate_err:
                 logger.error(f"Migration error in Layer 3: {migrate_err}")
                 return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل الانتقال لـ DC {e.new_dc}"}
