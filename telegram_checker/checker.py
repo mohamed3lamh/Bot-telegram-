@@ -127,7 +127,7 @@ class SmartCheckStrategy:
         except Exception as e:
             error_message = str(e).upper()
             logger.warning(f"[Layer 1] Silent Phase error: {e}")
-            if "BANNED" in error_message or "AUTH_KEY_UNREGISTERED" in error_message:
+            if "BANNED" in error_message or "AUTHKEY" in type(e).__name__.upper() or "NOT REGISTERED" in error_message or "DEACTIVATED" in type(e).__name__.upper():
                 await account_manager.disable_account(account["id"])
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
 
@@ -203,7 +203,7 @@ class SmartCheckStrategy:
                     "status_text": "📵 مـحـظـور"
                 }
 
-            elif "AUTH_KEY" in error_str:
+            elif "AUTHKEY" in error_type or "NOT REGISTERED" in error_str or "DEACTIVATED" in error_type:
                 await account_manager.disable_account(account["id"])
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
 
@@ -365,7 +365,7 @@ class SmartCheckStrategy:
                 return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
             if "BANNED" in error_str:
                 return {"status": "BANNED", "phone": phone, "status_text": "📵 مـحـظـور"}
-            if "AUTH_KEY" in error_str:
+            if "AUTHKEY" in type(e).__name__.upper() or "NOT REGISTERED" in error_str or "DEACTIVATED" in type(e).__name__.upper():
                 await account_manager.disable_account(account["id"])
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف"}
             return {"status": "ERROR", "phone": phone, "status_text": f"⚙️ خطأ نظام: {e}"}
