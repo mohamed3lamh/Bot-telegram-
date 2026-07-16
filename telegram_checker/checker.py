@@ -276,7 +276,12 @@ class SmartCheckStrategy:
             except Exception:
                 pass
             
-            logger.info(f"[Layer 3] Direct connection returned code. Deferring to Layer 4 (External Bot).")
+            if isinstance(result.type, SentCodeTypeApp):
+                logger.info(f"[Layer 3] Code sent to App! (SentCodeTypeApp). Deferring to Layer 4 (External Bot).")
+            elif isinstance(result.type, SentCodeTypeSms):
+                logger.info(f"[Layer 3] Code sent via SMS (SentCodeTypeSms). Deferring to Layer 4 (External Bot).")
+            else:
+                logger.info(f"[Layer 3] Code sent via {type(result.type).__name__}. Deferring to Layer 4 (External Bot).")
             
             # --- الطبقة الرابعة: بوت فحص خارجي ---
             checker_bot = await asyncio.to_thread(db.get_setting, "checker_bot_username")
