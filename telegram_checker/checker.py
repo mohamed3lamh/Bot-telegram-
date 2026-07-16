@@ -37,17 +37,20 @@ class SmartCheckStrategy:
             before_send = datetime.datetime.now(datetime.timezone.utc)
             await client.send_message(bot_username, phone)
             logger.info(f"[ExternalBot] Sent {phone} to {bot_username}, waiting for response...")
-
-            phone_str = phone.replace('+', '')
-            for _ in range(45):  # انتظار حتى 45 ثانية
-                await asyncio.sleep(1)
+            phone_str = ''.join(filter(str.isdigit, phone))
+            for _ in range(150):  # انتظار حتى 45 ثانية تقريباً (150 * 0.3)
+                await asyncio.sleep(0.3)
                 messages = await client.get_messages(bot_username, limit=15)
                 for msg in messages:
                     if msg.out:
                         continue
-                    # التأكد من أن الرسالة تحتوي على الرقم لكي لا تتداخل الفحوصات المتزامنة
-                    if msg.date >= before_send and '📊' in (msg.text or '') and phone_str in (msg.text or ''):
-                        reply = msg.text
+                    
+                    msg_text = msg.text or ''
+                    # استخراج الأرقام فقط من رسالة البوت لتخطي المسافات والتنسيقات (مثل +66 970)
+                    msg_digits = ''.join(filter(str.isdigit, msg_text))
+                    
+                    if msg.date >= before_send and '📊' in msg_text and phone_str in msg_digits:
+                        reply = msg_text
                         if '🔐' in reply:
                             logger.info(f"[ExternalBot] ✅ Result: REGISTERED (Phone: {phone})")
                             return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
