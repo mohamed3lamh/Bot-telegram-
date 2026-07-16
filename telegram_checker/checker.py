@@ -37,20 +37,15 @@ class SmartCheckStrategy:
             before_send = datetime.datetime.now(datetime.timezone.utc)
             await client.send_message(bot_username, phone)
             logger.info(f"[ExternalBot] Sent {phone} to {bot_username}, waiting for response...")
-            phone_str = ''.join(filter(str.isdigit, phone))
-            for _ in range(150):  # انتظار حتى 45 ثانية تقريباً (150 * 0.3)
-                await asyncio.sleep(0.3)
-                messages = await client.get_messages(bot_username, limit=15)
+
+            for _ in range(45):  # انتظار حتى 45 ثانية
+                await asyncio.sleep(1)
+                messages = await client.get_messages(bot_username, limit=3)
                 for msg in messages:
                     if msg.out:
                         continue
-                    
-                    msg_text = msg.text or ''
-                    # استخراج الأرقام فقط من رسالة البوت لتخطي المسافات والتنسيقات (مثل +66 970)
-                    msg_digits = ''.join(filter(str.isdigit, msg_text))
-                    
-                    if msg.date >= before_send and '📊' in msg_text and phone_str in msg_digits:
-                        reply = msg_text
+                    if msg.date >= before_send and '📊' in (msg.text or ''):
+                        reply = msg.text
                         if '🔐' in reply:
                             logger.info(f"[ExternalBot] ✅ Result: REGISTERED (Phone: {phone})")
                             return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
@@ -122,12 +117,8 @@ class SmartCheckStrategy:
             }
         except Exception as e:
             error_message = str(e).upper()
-            error_type = type(e).__name__.upper()
-            logger.warning(f"[Layer 1] Silent Phase error: {type(e).__name__} - {e}")
-            if "BANNED" in error_message or "BANNED" in error_type:
-                await account_manager.disable_account(account["id"])
-                return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
-            elif "AUTH_KEY" in error_type or "UNREGISTERED" in error_type:
+            logger.warning(f"[Layer 1] Silent Phase error: {e}")
+            if "BANNED" in error_message or "AUTH_KEY_UNREGISTERED" in error_message:
                 await account_manager.disable_account(account["id"])
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
 
@@ -203,7 +194,7 @@ class SmartCheckStrategy:
                     "status_text": "📵 مـحـظـور"
                 }
 
-            elif "AUTH_KEY" in error_type or "UNREGISTERED" in error_type:
+            elif "AUTH_KEY" in error_str:
                 await account_manager.disable_account(account["id"])
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
 
