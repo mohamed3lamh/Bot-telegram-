@@ -844,7 +844,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["admin_action"] = "set_manager_acc"
             # Get all accounts to show IDs
             try:
-                import database as db
                 from telegram_checker.account_manager import account_manager
                 accounts = await account_manager.get_all_accounts()
                 msg = "👑 **تخصيص حساب المدير للطبقة الرابعة**\n\n"
