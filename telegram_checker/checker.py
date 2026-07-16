@@ -4,9 +4,7 @@ import logging
 import time
 import traceback
 import datetime
-import random
 from telethon import functions, types
-from telethon.tl.functions.auth import ExportAuthorizationRequest, ImportAuthorizationRequest
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
     SessionPasswordNeededError, PhoneNumberInvalidError,
@@ -39,20 +37,15 @@ class SmartCheckStrategy:
             before_send = datetime.datetime.now(datetime.timezone.utc)
             await client.send_message(bot_username, phone)
             logger.info(f"[ExternalBot] Sent {phone} to {bot_username}, waiting for response...")
-            phone_str = ''.join(filter(str.isdigit, phone))
-            for _ in range(150):  # انتظار حتى 45 ثانية تقريباً (150 * 0.3)
-                await asyncio.sleep(0.3)
-                messages = await client.get_messages(bot_username, limit=15)
+
+            for _ in range(45):  # انتظار حتى 45 ثانية
+                await asyncio.sleep(1)
+                messages = await client.get_messages(bot_username, limit=3)
                 for msg in messages:
                     if msg.out:
                         continue
-                    
-                    msg_text = msg.text or ''
-                    # استخراج الأرقام فقط من رسالة البوت لتخطي المسافات والتنسيقات (مثل +66 970)
-                    msg_digits = ''.join(filter(str.isdigit, msg_text))
-                    
-                    if msg.date >= before_send and '📊' in msg_text and phone_str in msg_digits:
-                        reply = msg_text
+                    if msg.date >= before_send and '📊' in (msg.text or ''):
+                        reply = msg.text
                         if '🔐' in reply:
                             logger.info(f"[ExternalBot] ✅ Result: REGISTERED (Phone: {phone})")
                             return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
@@ -102,8 +95,17 @@ class SmartCheckStrategy:
                 return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
         except PhoneMigrateError as e:
-            logger.info(f"[Layer 1] Phone migrate detected to DC {e.new_dc}. Skipping Layer 1 to avoid bouncing back to Home DC.")
-            pass
+            # معالجة فورية لانتقال مركز البيانات
+            logger.info(f"[Layer 1] Phone migrate detected to DC {e.new_dc}. Re-routing...")
+            try:
+                await telegram_client_manager.disconnect_client(account["id"])
+                client2 = await telegram_client_manager.get_client(account)
+                await client2._switch_dc(e.new_dc)
+                await asyncio.sleep(0.5)
+                return await self.check(client2, phone, account)
+            except Exception as migrate_error:
+                logger.error(f"Migration error: {migrate_error}")
+                return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل الانتقال لـ DC {e.new_dc}"}
 
         except FloodWaitError as e:
             await flood_manager.set_flood(account["id"], e.seconds)
@@ -115,12 +117,8 @@ class SmartCheckStrategy:
             }
         except Exception as e:
             error_message = str(e).upper()
-            error_type = type(e).__name__.upper()
-            logger.warning(f"[Layer 1] Silent Phase error: {type(e).__name__} - {e}")
-            if "BANNED" in error_message or "BANNED" in error_type:
-                await account_manager.disable_account(account["id"])
-                return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
-            elif "AUTH_KEY" in error_type or "UNREGISTERED" in error_type:
+            logger.warning(f"[Layer 1] Silent Phase error: {e}")
+            if "BANNED" in error_message or "AUTH_KEY_UNREGISTERED" in error_message:
                 await account_manager.disable_account(account["id"])
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
 
@@ -196,7 +194,7 @@ class SmartCheckStrategy:
                     "status_text": "📵 مـحـظـور"
                 }
 
-            elif "AUTH_KEY" in error_type or "UNREGISTERED" in error_type:
+            elif "AUTH_KEY" in error_str:
                 await account_manager.disable_account(account["id"])
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
 
@@ -341,35 +339,14 @@ class SmartCheckStrategy:
             return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
         except PhoneMigrateError as e:
-            logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Creating temporary connection to foreign DC...")
-            from telethon import TelegramClient
-            from telethon.sessions import StringSession
-            from telethon.tl.functions.auth import ExportAuthorizationRequest, ImportAuthorizationRequest
+            logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Re-routing...")
             try:
-                auth = await client(ExportAuthorizationRequest(dc_id=e.new_dc))
-                temp_client = TelegramClient(StringSession(), client.api_id, client.api_hash)
-                await temp_client.connect()
-                await temp_client._switch_dc(e.new_dc)
-                await temp_client(ImportAuthorizationRequest(id=auth.id, bytes=auth.bytes))
-                logger.info(f"[Layer 3] Running direct send_code_request on foreign DC {e.new_dc}")
-                try:
-                    await temp_client(functions.auth.SendCodeRequest(
-                        phone_number=phone,
-                        api_id=temp_client.api_id,
-                        api_hash=temp_client.api_hash,
-                        settings=types.CodeSettings()
-                    ))
-                    logger.info(f"[Layer 3] Code sent on foreign DC. Deferring to Layer 4 (External Bot).")
-                except PhoneNumberUnoccupiedError:
-                    return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
-                except PhoneNumberBannedError:
-                    return {"status": "BANNED", "phone": phone, "status_text": "📵 مـحـظـور"}
-                except Exception as inner_e:
-                    logger.warning(f"[Layer 3] Temp client check returned: {inner_e}")
-                finally:
-                    await temp_client.disconnect()
+                await telegram_client_manager.disconnect_client(account["id"])
+                client2 = await telegram_client_manager.get_client(account)
+                await client2._switch_dc(e.new_dc)
+                await asyncio.sleep(0.5)
+                return await self.check(client2, phone, account)
             except Exception as migrate_err:
-                logger.error(f"Migration error in Layer 3: {migrate_err}")
                 return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل الانتقال لـ DC {e.new_dc}"}
 
         except Exception as e:
