@@ -38,13 +38,15 @@ class SmartCheckStrategy:
             await client.send_message(bot_username, phone)
             logger.info(f"[ExternalBot] Sent {phone} to {bot_username}, waiting for response...")
 
+            phone_str = phone.replace('+', '')
             for _ in range(45):  # انتظار حتى 45 ثانية
                 await asyncio.sleep(1)
-                messages = await client.get_messages(bot_username, limit=3)
+                messages = await client.get_messages(bot_username, limit=15)
                 for msg in messages:
                     if msg.out:
                         continue
-                    if msg.date >= before_send and '📊' in (msg.text or ''):
+                    # التأكد من أن الرسالة تحتوي على الرقم لكي لا تتداخل الفحوصات المتزامنة
+                    if msg.date >= before_send and '📊' in (msg.text or '') and phone_str in (msg.text or ''):
                         reply = msg.text
                         if '🔐' in reply:
                             logger.info(f"[ExternalBot] ✅ Result: REGISTERED (Phone: {phone})")
