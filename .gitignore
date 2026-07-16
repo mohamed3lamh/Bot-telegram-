@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+check_db.py
+fix_checker.py
+fix_checker_manager.py
+fix_manager.py
+test_asocks.py
+test_proxy.py
+test_sms.py
