@@ -266,6 +266,25 @@ class SmartCheckStrategy:
                 api_hash=account["api_hash"],
                 settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
             ))
+
+            # الحيلة الذهبية: تسجيل دخول وهمي لكشف حالة الرقم
+            try:
+                await client(functions.auth.SignInRequest(
+                    phone_number=phone,
+                    phone_code_hash=result.phone_code_hash,
+                    phone_code='11111'
+                ))
+            except PhoneNumberUnoccupiedError:
+                logger.info(f"[Layer 3] Golden Trick: Phone is Unoccupied. (Phone: {phone})")
+                return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
+            except PhoneCodeInvalidError:
+                logger.info(f"[Layer 3] Golden Trick: Phone is Registered (PhoneCodeInvalidError).")
+                pass
+            except SessionPasswordNeededError:
+                logger.info(f"[Layer 3] Golden Trick: Phone is Registered (SessionPasswordNeededError).")
+                pass
+            except Exception:
+                pass
             
             # إلغاء الكود فوراً
             try:
