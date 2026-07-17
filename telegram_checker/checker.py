@@ -252,6 +252,14 @@ class SmartCheckStrategy:
                         if hasattr(self, "_shadowban_strikes") and account["id"] in self._shadowban_strikes:
                             self._shadowban_strikes[account["id"]] = 0
 
+        # ==============================================================
+        # الحل الجذري: اعتماد نتيجة الطبقة الثانية
+        # تيليجرام جعل الطبقة الثالثة تكذب دائماً، لذا نتوقف هنا إذا أثبتت الطبقة الثانية أن الرقم متاح
+        # ==============================================================
+        if layer_results.get("layer2") == "NO_SESSION":
+            logger.info(f"✅ [Engine] Layer 2 confirmed UNOCCUPIED. Bypassing Layer 3 Fake Responses.")
+            return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
+
         # --- الطبقة الثالثة: فحص التدفق بالكود التجريبي (send_code_request) مجاني ومباشر ---
         logger.info(f"[Layer 3: SendCode] Running direct send_code_request for {phone}")
         is_success = False
