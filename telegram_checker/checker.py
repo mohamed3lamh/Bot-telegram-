@@ -272,13 +272,12 @@ class SmartCheckStrategy:
                 )
             ))
 
-            # الحيلة المعاكسة: طلب إنشاء حساب لاصطياد الأرقام المسجلة
+            # الحيلة المعاكسة: طلب إنشاء حساب لاصطياد الأرقام المسجلة (إصلاح TypeError)
             try:
-                from telethon.errors import PhoneNumberOccupiedError
+                from telethon.errors import PhoneNumberOccupiedError, PhoneCodeEmptyError, PhoneCodeExpiredError
                 await client(functions.auth.SignUpRequest(
                     phone_number=phone,
                     phone_code_hash=result.phone_code_hash,
-                    phone_code='11111',
                     first_name='Test',
                     last_name='User'
                 ))
