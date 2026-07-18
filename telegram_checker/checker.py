@@ -252,14 +252,6 @@ class SmartCheckStrategy:
                         if hasattr(self, "_shadowban_strikes") and account["id"] in self._shadowban_strikes:
                             self._shadowban_strikes[account["id"]] = 0
 
-        # ==============================================================
-        # الحل الجذري: اعتماد نتيجة الطبقة الثانية
-        # تيليجرام جعل الطبقة الثالثة تكذب دائماً، لذا نتوقف هنا إذا أثبتت الطبقة الثانية أن الرقم متاح
-        # ==============================================================
-        if layer_results.get("layer2") == "NO_SESSION":
-            logger.info(f"✅ [Engine] Layer 2 confirmed UNOCCUPIED. Bypassing Layer 3 Fake Responses.")
-            return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
-
         # --- الطبقة الثالثة: فحص التدفق بالكود التجريبي (send_code_request) مجاني ومباشر ---
         logger.info(f"[Layer 3: SendCode] Running direct send_code_request for {phone}")
         is_success = False
@@ -284,12 +276,7 @@ class SmartCheckStrategy:
             except Exception:
                 pass
             
-            if isinstance(result.type, SentCodeTypeApp):
-                logger.info(f"[Layer 3] Code sent to App! (SentCodeTypeApp). Deferring to Layer 4 (External Bot).")
-            elif isinstance(result.type, SentCodeTypeSms):
-                logger.info(f"[Layer 3] Code sent via SMS (SentCodeTypeSms). Deferring to Layer 4 (External Bot).")
-            else:
-                logger.info(f"[Layer 3] Code sent via {type(result.type).__name__}. Deferring to Layer 4 (External Bot).")
+            logger.info(f"[Layer 3] Direct connection returned code. Deferring to Layer 4 (External Bot).")
             
             # --- الطبقة الرابعة: بوت فحص خارجي ---
             checker_bot = await asyncio.to_thread(db.get_setting, "checker_bot_username")
