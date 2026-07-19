@@ -10,6 +10,7 @@ import database as db
 from bot_manager import bot_manager
 from telegram_checker.login_manager import login_manager
 from proxy_infrastructure import check_all_proxies_health
+from aiohttp import web
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1151,7 +1152,6 @@ async def main():
     main_app.add_error_handler(global_error_handler)
 
     await main_app.initialize()
-    await main_app.updater.start_polling()
     await main_app.start()
 
     async def proxy_health_checker_loop():
@@ -1166,11 +1166,58 @@ async def main():
     asyncio.create_task(safe_restore())
     asyncio.create_task(proxy_health_checker_loop())
 
+    WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+    if WEBHOOK_URL:
+        # إعداد الـ Webhook
+        webhook_path = f"{WEBHOOK_URL.rstrip('/')}/webhook/{MAIN_TOKEN}"
+        await main_app.bot.set_webhook(url=webhook_path, drop_pending_updates=True)
+        logger.info(f"Main Bot Webhook set to {webhook_path}")
+
+        # إعداد خادم التوجيه الذكي باستخدام aiohttp
+        app_web = web.Application()
+
+        async def webhook_handler(request: web.Request):
+            bot_token = request.match_info.get("token")
+            # تحديد البوت المستهدف
+            if bot_token == MAIN_TOKEN:
+                target_app = main_app
+            else:
+                target_app = bot_manager.token_to_app.get(bot_token)
+            
+            if not target_app:
+                return web.Response(status=404)
+            
+            try:
+                data = await request.json()
+                update = Update.de_json(data, target_app.bot)
+                await target_app.update_queue.put(update)
+            except Exception as e:
+                logger.error(f"Error processing webhook: {e}")
+                
+            return web.Response(status=200)
+
+        app_web.router.add_post("/webhook/{token}", webhook_handler)
+
+        runner = web.AppRunner(app_web)
+        await runner.setup()
+        port = int(os.environ.get("PORT", 8080))
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        logger.info(f"Hybrid Webhook Smart Router started on port {port}")
+        
+    else:
+        await main_app.updater.start_polling()
+        logger.info("Main Bot started with Polling (No WEBHOOK_URL found)")
+
     try:
         while True:
             await asyncio.sleep(3600)
     except (KeyboardInterrupt, SystemExit):
-        await main_app.updater.stop()
+        if WEBHOOK_URL:
+            await main_app.bot.delete_webhook()
+            await runner.cleanup()
+        elif main_app.updater and main_app.updater.running:
+            await main_app.updater.stop()
         await main_app.stop()
         await main_app.shutdown()
 

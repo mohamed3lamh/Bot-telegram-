@@ -4,3 +4,4 @@ httpx
 asyncpg
 telethon==1.40.0
 PySocks==1.7.1
+aiohttp

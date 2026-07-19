@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 from collections import defaultdict
@@ -8,10 +9,14 @@ import database as db
 
 logger = logging.getLogger(__name__)
 
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+
 class BotManager:
     def __init__(self):
         self.running_tasks = {}  # تخزين المهام النشطة {user_id: asyncio.Task}
         self.running_apps = {}   # تخزين تطبيقات البوتات {user_id: Application}
+        self.token_to_app = {}
+        self.user_to_token = {}
         # قفل لكل مستخدم يمنع بدء تشغيل نسختين من نفس بوت المستخدم في نفس اللحظة
         # (كان يحدث عند تزامن استعادة البوتات بعد إعادة تشغيل السيرفر مع ضغطة المستخدم اليدوية).
         self._start_locks = defaultdict(asyncio.Lock)
@@ -38,10 +43,17 @@ class BotManager:
                 # تهيئة وتحديث التطبيق بشكل صحيح مستقر
                 await app.initialize()
                 await app.start()
-                await app.updater.start_polling(drop_pending_updates=True)
+                
+                if WEBHOOK_URL:
+                    webhook_url = f"{WEBHOOK_URL.rstrip('/')}/webhook/{token}"
+                    await app.bot.set_webhook(url=webhook_url, drop_pending_updates=True)
+                else:
+                    await app.updater.start_polling(drop_pending_updates=True)
 
                 # حفظ التطبيق في الذاكرة
                 self.running_apps[user_id] = app
+                self.token_to_app[token] = app
+                self.user_to_token[user_id] = token
 
                 # إطلاق حلقة الاستماع الصحيحة في الخلفية لضمان عدم تعليق البوت
                 self.running_tasks[user_id] = asyncio.create_task(self._run_app_loop(user_id))
@@ -72,7 +84,9 @@ class BotManager:
         try:
             if app:
                 # إيقاف التحديثات أولاً ثم قفل التطبيق بالترتيب الصحيح
-                if app.updater and app.updater.running:
+                if WEBHOOK_URL:
+                    await app.bot.delete_webhook()
+                elif app.updater and app.updater.running:
                     await app.updater.stop()
                 await app.stop()
                 await app.shutdown()
@@ -85,6 +99,10 @@ class BotManager:
             # تنظيف الذاكرة في كل الأحوال
             self.running_tasks.pop(user_id, None)
             self.running_apps.pop(user_id, None)
+            token = self.user_to_token.pop(user_id, None)
+            if token:
+                self.token_to_app.pop(token, None)
+                
             await db.set_status(user_id, 0)
             
         logger.info(f"🛑 تم إيقاف البوت وتحرير مساحته للمرسل: {user_id}")
