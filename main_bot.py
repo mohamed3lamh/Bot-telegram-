@@ -48,7 +48,7 @@ async def set_honeypot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("الرجاء إرسال الرقم. مثال:\n/set_honeypot +123456789")
         return
     phone = context.args[0]
-    await asyncio.to_thread(db.set_setting, "honeypot_number", phone)
+    await db.set_setting("honeypot_number", phone)
     await update.message.reply_text(f"✅ تم حفظ رقم الفخ بنجاح: {phone}\n\nسيقوم البوت الآن بفحص هذا الرقم تلقائياً لاختبار الحسابات التي تدعي عدم وجود أرقام الصيد للتأكد من سلامتها من حظر الظل.")
 
 async def set_checker_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -60,17 +60,17 @@ async def set_checker_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     bot_username = context.args[0].replace("@", "")
     if bot_username.lower() == "off":
-        await asyncio.to_thread(db.set_setting, "checker_bot_username", "")
+        await db.set_setting("checker_bot_username", "")
         await update.message.reply_text("❌ تم تعطيل الربط مع بوت الفحص الخارجي.")
     else:
-        await asyncio.to_thread(db.set_setting, "checker_bot_username", bot_username)
+        await db.set_setting("checker_bot_username", bot_username)
         await update.message.reply_text(f"✅ تم تفعيل الربط مع البوت: @{bot_username}")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name
-    db_data = await asyncio.to_thread(db.get_bot, user_id)
+    db_data = await db.get_bot(user_id)
     if db_data and len(db_data) >= 4:
         if db_data[3] == 1:
             await update.message.reply_text("❌ عذراً، تم إيقاف حسابك وحظرك من استخدام المنصة من قبل الإدارة.")
@@ -99,7 +99,7 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ التوكن غير صالح! تأكد من الحصول عليه بشكل صحيح من @BotFather.")
             return
         try:
-            await asyncio.to_thread(db.save_bot, user_id, text)
+            await db.save_bot(user_id, text)
             await update.message.reply_text(
                 f"✅ تم تحديث توكن البوت بنجاح\n\n"
                 f"🔑 التوكن: <code>{text}</code>",
@@ -113,8 +113,8 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ticket_id = context.user_data.get("replying_ticket_id")
         if ticket_id:
             reply_text = text
-            await asyncio.to_thread(db.reply_ticket, ticket_id, reply_text)
-            await asyncio.to_thread(db.log_activity, user_id, "رد على تذكرة", f"Ticket #{ticket_id}")
+            await db.reply_ticket(ticket_id, reply_text)
+            await db.log_activity(user_id, "رد على تذكرة", f"Ticket #{ticket_id}")
             await update.message.reply_text("✅ تم إرسال الرد وإغلاق التذكرة.")
             context.user_data.pop("admin_action", None)
             context.user_data.pop("replying_ticket_id", None)
@@ -124,8 +124,8 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID != 0 and user_id == ADMIN_ID and context.user_data.get("admin_action") == "edit_setting":
         key = context.user_data.get("editing_setting_key")
         if key:
-            await asyncio.to_thread(db.set_setting, key, text)
-            await asyncio.to_thread(db.log_activity, user_id, "تعديل إعداد", f"{key} = {text}")
+            await db.set_setting(key, text)
+            await db.log_activity(user_id, "تعديل إعداد", f"{key} = {text}")
             await update.message.reply_text(f"✅ تم تحديث {key} إلى {text}")
             context.user_data.pop("admin_action", None)
             context.user_data.pop("editing_setting_key", None)
@@ -138,8 +138,8 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 target_id, value = text.split(" ")
                 target_id = int(target_id)
-                await asyncio.to_thread(db.add_days_to_user, target_id, int(value))
-                await asyncio.to_thread(db.log_activity, user_id, "إضافة أيام", f"للمستخدم {target_id} - {value} يوم")
+                await db.add_days_to_user(target_id, int(value))
+                await db.log_activity(user_id, "إضافة أيام", f"للمستخدم {target_id} - {value} يوم")
                 await update.message.reply_text(f"✅ تم إضافة {value} يوم للمستخدم `{target_id}` بنجاح.")
             except Exception:
                 await update.message.reply_text("❌ صيغة خاطئة. يرجى إدخال: `المعرف القيمة` (مثال: `834033986 30`)")
@@ -149,8 +149,8 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 target_id, value = text.split(" ")
                 target_id = int(target_id)
-                await asyncio.to_thread(db.ban_user, target_id, int(value))
-                await asyncio.to_thread(db.log_activity, user_id, "حظر/إلغاء حظر", f"مستخدم {target_id} - حالة {value}")
+                await db.ban_user(target_id, int(value))
+                await db.log_activity(user_id, "حظر/إلغاء حظر", f"مستخدم {target_id} - حالة {value}")
                 status_text = "حظر" if int(value) == 1 else "إلغاء حظر"
                 await update.message.reply_text(f"✅ تم تعديل حالة المستخدم `{target_id}` إلى: **{status_text}**.")
             except Exception:
@@ -164,16 +164,16 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await bot_manager.stop_bot(target_id)
                 except Exception:
                     pass
-                def _delete_user():
-                    with db.get_connection() as conn:
+                async def _delete_user():
+                    async with db.get_connection() as conn:
                         cursor = conn.cursor()
                         try:
-                            cursor.execute(f"DELETE FROM {table_name} WHERE user_id = %s", (target_id,))
-                            conn.commit()
+                            await cursor.execute(f"DELETE FROM {table_name} WHERE user_id = %s", (target_id,))
+                            await conn.commit()
                         finally:
-                            cursor.close()
-                await asyncio.to_thread(_delete_user)
-                await asyncio.to_thread(db.log_activity, user_id, "حذف مستخدم", f"المستخدم {target_id}")
+                            await cursor.close()
+                await _delete_user()
+                await db.log_activity(user_id, "حذف مستخدم", f"المستخدم {target_id}")
                 await update.message.reply_text(f"🗑️ تم حذف المستخدم `{target_id}` نهائياً من الجدول `{table_name}` وإيقاف خط السحب الخاص به.")
             except Exception as e:
                 await update.message.reply_text(f"❌ فشل تنفيذ الحذف. الخطأ: {e}")
@@ -199,7 +199,7 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         
                         ptype = 'HTTP' if port in (80, 443) else 'SOCKS5'
                         
-                        await asyncio.to_thread(
+                        await (
                             db.add_proxy, 
                             country_code, 
                             host, 
@@ -213,7 +213,7 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         added_count += 1
                 
                 if added_count > 0:
-                    await asyncio.to_thread(db.log_activity, user_id, "إضافة بروكسيات", f"تم إضافة {added_count} بروكسي")
+                    await db.log_activity(user_id, "إضافة بروكسيات", f"تم إضافة {added_count} بروكسي")
                     await update.message.reply_text(f"✅ تم إضافة {added_count} بروكسي بنجاح.")
                 else:
                     await update.message.reply_text("❌ صيغة خاطئة. لم يتم التعرف على أي بروكسي صالح.")
@@ -225,22 +225,22 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == "set_checker_bot":
             bot_username = text.replace("@", "").strip()
             if bot_username.lower() == "off":
-                await asyncio.to_thread(db.set_setting, "checker_bot_username", "")
+                await db.set_setting("checker_bot_username", "")
                 await update.message.reply_text("❌ تم تعطيل الربط مع بوت الفحص الخارجي.")
             else:
-                await asyncio.to_thread(db.set_setting, "checker_bot_username", bot_username)
+                await db.set_setting("checker_bot_username", bot_username)
                 await update.message.reply_text(f"✅ تم تفعيل الربط مع البوت: @{bot_username}")
             context.user_data.pop("admin_action", None)
             return
         elif action == "set_manager_acc":
             val = text.strip()
             if val.lower() == "off":
-                await asyncio.to_thread(db.set_setting, "external_checker_account_id", "")
+                await db.set_setting("external_checker_account_id", "")
                 await update.message.reply_text("❌ تم تعطيل ميزة الحساب المدير. سيتم المراسلة من أي حساب فاحص متاح.")
             else:
                 try:
                     acc_id = int(val)
-                    await asyncio.to_thread(db.set_setting, "external_checker_account_id", str(acc_id))
+                    await db.set_setting("external_checker_account_id", str(acc_id))
                     await update.message.reply_text(f"✅ تم تخصيص الحساب رقم `{acc_id}` ليكون حساب المدير (Layer 4).", parse_mode="Markdown")
                 except ValueError:
                     await update.message.reply_text("❌ يرجى إرسال أرقام فقط (ID الحساب).")
@@ -249,10 +249,10 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == "set_honeypot":
             phone = text.strip()
             if phone.lower() == "off":
-                await asyncio.to_thread(db.set_setting, "honeypot_number", "")
+                await db.set_setting("honeypot_number", "")
                 await update.message.reply_text("❌ تم تعطيل رقم الفخ بنجاح.")
             else:
-                await asyncio.to_thread(db.set_setting, "honeypot_number", phone)
+                await db.set_setting("honeypot_number", phone)
                 await update.message.reply_text(f"✅ تم حفظ رقم الفخ بنجاح: {phone}\n\nسيقوم البوت الآن بفحص هذا الرقم تلقائياً لاختبار الحسابات التي تدعي عدم وجود أرقام الصيد للتأكد من سلامتها من حظر الظل.")
             context.user_data.pop("admin_action", None)
             return
@@ -264,7 +264,7 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text("❌ التوكن غير صالح! تأكد من الحصول عليه بشكل صحيح من @BotFather.")
         return
     try:
-        await asyncio.to_thread(db.save_bot, user_id, text)
+        await db.save_bot(user_id, text)
         await status_msg.delete()
         await update.message.reply_text("✅ تم شحن وتحديث توكن البوت الجديد بنجاح!")
     except Exception as e:
@@ -279,7 +279,7 @@ async def show_dashboard(update: Update, user_id: int, user_name: str):
     days_left = "غير مشترك"
     status = "⚪️ غير مربوط"
     try:
-        db_data = await asyncio.to_thread(db.get_bot, user_id)
+        db_data = await db.get_bot(user_id)
         if db_data and len(db_data) >= 4:
             status = bot_manager.get_status(user_id)
             expires_at = db_data[2]
@@ -329,7 +329,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_admin_panel(update: Update):
     try:
-        total, active = await asyncio.to_thread(db.get_stats)
+        total, active = await db.get_stats()
     except Exception:
         total, active = 0, 0
 
@@ -391,15 +391,15 @@ async def show_user_management(update: Update, page=0):
     per_page = 10
     offset = page * per_page
     try:
-        def _get_users():
-            with db.get_connection() as conn:
+        async def _get_users():
+            async with db.get_connection() as conn:
                 cursor = conn.cursor()
                 try:
-                    cursor.execute("SELECT user_id, token, is_active, expires_at, is_banned FROM user_bots ORDER BY user_id LIMIT %s OFFSET %s", (per_page, offset))
-                    return cursor.fetchall()
+                    await cursor.execute("SELECT user_id, token, is_active, expires_at, is_banned FROM user_bots ORDER BY user_id LIMIT %s OFFSET %s", (per_page, offset))
+                    return await cursor.fetchall()
                 finally:
-                    cursor.close()
-        rows = await asyncio.to_thread(_get_users)
+                    await cursor.close()
+        rows = await (_get_users)
     except Exception as e:
         await query.answer(f"خطأ: {e}", show_alert=True)
         return
@@ -427,15 +427,15 @@ async def show_user_management(update: Update, page=0):
         if page > 0:
             nav_row.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"user_page_{page-1}"))
         # بفرض وجود المزيد (فحص بسيط)
-        def _get_total():
-            with db.get_connection() as conn:
+        async def _get_total():
+            async with db.get_connection() as conn:
                 cursor = conn.cursor()
                 try:
-                    cursor.execute("SELECT COUNT(*) FROM user_bots")
-                    return cursor.fetchone()[0]
+                    await cursor.execute("SELECT COUNT(*) FROM user_bots")
+                    return await cursor.fetchone()[0]
                 finally:
-                    cursor.close()
-        total = await asyncio.to_thread(_get_total)
+                    await cursor.close()
+        total = await (_get_total)
         if offset + per_page < total:
             nav_row.append(InlineKeyboardButton("التالي ➡️", callback_data=f"user_page_{page+1}"))
         if nav_row:
@@ -447,7 +447,7 @@ async def show_user_management(update: Update, page=0):
 
 async def show_user_detail(update: Update, user_id: int):
     query = update.callback_query
-    data = await asyncio.to_thread(db.get_bot, user_id)
+    data = await db.get_bot(user_id)
     if not data:
         await query.answer("المستخدم غير موجود", show_alert=True)
         return
@@ -460,7 +460,7 @@ async def show_user_detail(update: Update, user_id: int):
             expires_at = datetime.fromisoformat(expires_at.replace("Z", ""))
         exp_text = expires_at.strftime("%Y-%m-%d %H:%M")
     # عدد الحسابات المربوطة
-    accounts = await asyncio.to_thread(db.get_all_site_accounts, user_id)
+    accounts = await db.get_all_site_accounts(user_id)
     num_accounts = len(accounts)
     text = (
         f"👤 **معلومات المستخدم:**\n"
@@ -482,7 +482,7 @@ async def show_user_detail(update: Update, user_id: int):
 # ---------- سجل العمليات ----------
 async def show_activity_log(update: Update):
     query = update.callback_query
-    activities = await asyncio.to_thread(db.get_recent_activities, 30)
+    activities = await db.get_recent_activities(30)
     if not activities:
         text = "لا توجد عمليات مسجلة حتى الآن."
     else:
@@ -498,7 +498,7 @@ async def show_activity_log(update: Update):
 # ---------- تذاكر الدعم ----------
 async def show_tickets(update: Update):
     query = update.callback_query
-    tickets = await asyncio.to_thread(db.get_open_tickets)
+    tickets = await db.get_open_tickets()
     if not tickets:
         text = "🎫 لا توجد تذاكر مفتوحة."
         keyboard = [[InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="admin_panel")]]
@@ -529,7 +529,7 @@ async def handle_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ---------- إعدادات الأسعار والمحافظ ----------
 async def show_settings(update: Update):
     query = update.callback_query
-    settings = await asyncio.to_thread(db.get_all_settings)
+    settings = await db.get_all_settings()
     text = "⚙️ **الإعدادات الحالية:**\n\n"
     keyboard = []
     for k, v in settings:
@@ -544,7 +544,7 @@ async def prompt_edit_setting(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.message.reply_text(f"📝 أدخل القيمة الجديدة لـ {key}:")
     context.user_data["admin_action"] = "edit_setting"
 async def show_proxy_management(update: Update):
-    proxies = await asyncio.to_thread(db.get_all_proxies)
+    proxies = await db.get_all_proxies()
     if not proxies:
         text = "❌ لا توجد بروكسيات مضافة بعد."
         keyboard = [[InlineKeyboardButton("🔙 العودة للوحة الإدارة", callback_data="admin_panel")]]
@@ -604,7 +604,7 @@ async def start_add_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- دوال إدارة الحسابات الفاحصة ----------
 async def show_checker_management(update: Update):
-    accounts = await asyncio.to_thread(db.get_all_checkers)
+    accounts = await db.get_all_checkers()
     if not accounts:
         text = "❌ لا توجد حسابات فحص مضافة بعد."
         keyboard = [[InlineKeyboardButton("🔙 العودة للوحة الإدارة", callback_data="admin_panel")]]
@@ -638,14 +638,14 @@ async def toggle_checker_callback(update: Update, context: ContextTypes.DEFAULT_
     except ValueError:
         await query.answer("خطأ في البيانات", show_alert=True)
         return
-    accounts = await asyncio.to_thread(db.get_all_checkers)
+    accounts = await db.get_all_checkers()
     acc = next((a for a in accounts if a[0] == acc_id), None)
     if not acc:
         await query.message.reply_text("❌ الحساب غير موجود.")
         return
     phone = acc[1]
     old_status = acc[2]
-    await asyncio.to_thread(db.toggle_checker, acc_id)
+    await db.toggle_checker(acc_id)
     new_status = not old_status
     status_text = "تفعيل" if new_status else "تعطيل"
     await query.message.reply_text(f"✅ تم {status_text} الحساب `{phone}` بنجاح.")
@@ -760,7 +760,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif query.data.startswith("delete_chk_"):
             acc_id = int(query.data.replace("delete_chk_", ""))
-            await asyncio.to_thread(db.delete_checker, acc_id)
+            await db.delete_checker(acc_id)
             await query.answer("🗑️ تم حذف الحساب الفاحص", show_alert=False)
             await show_checker_management(update)
             return
@@ -811,17 +811,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif query.data.startswith("delete_pxy_"):
             pxy_id = int(query.data.replace("delete_pxy_", ""))
-            await asyncio.to_thread(db.delete_proxy, pxy_id)
+            await db.delete_proxy(pxy_id)
             await query.answer("🗑️ تم حذف البروكسي بنجاح", show_alert=False)
             await show_proxy_management(update)
             return
         elif query.data.startswith("toggle_pxy_"):
             pxy_id = int(query.data.replace("toggle_pxy_", ""))
-            proxies = await asyncio.to_thread(db.get_all_proxies)
+            proxies = await db.get_all_proxies()
             pxy = next((p for p in proxies if p["id"] == pxy_id), None)
             if pxy:
                 new_status = not pxy["is_active"]
-                await asyncio.to_thread(db.toggle_proxy, pxy_id, new_status)
+                await db.toggle_proxy(pxy_id, new_status)
                 status_text = "تفعيل" if new_status else "تعطيل"
                 await query.answer(f"✅ تم {status_text} البروكسي", show_alert=True)
             await show_proxy_management(update)
@@ -841,15 +841,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "adm_get_ids":
             try:
                 table_name = get_correct_table_name()
-                def _get_ids():
-                    with db.get_connection() as conn:
+                async def _get_ids():
+                    async with db.get_connection() as conn:
                         cursor = conn.cursor()
                         try:
-                            cursor.execute(f"SELECT user_id FROM {table_name}")
-                            return cursor.fetchall()
+                            await cursor.execute(f"SELECT user_id FROM {table_name}")
+                            return await cursor.fetchall()
                         finally:
-                            cursor.close()
-                rows = await asyncio.to_thread(_get_ids)
+                            await cursor.close()
+                rows = await (_get_ids)
                 if rows:
                     user_list = "\n".join([f"👤 ID: `{row[0]}`" for row in rows])
                 else:
@@ -898,7 +898,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # نستخدم claim_pending_subscription (قراءة + حذف ذريّان معاً عبر DELETE...RETURNING)
             # بدل get ثم delete كخطوتين منفصلتين، لمنع تفعيل نفس الاشتراك مرتين لو ضغط الأدمن
             # زر التأكيد مرتين بسرعة (Race Condition).
-            pending = await asyncio.to_thread(db.claim_pending_subscription, target_id)
+            pending = await db.claim_pending_subscription(target_id)
             if not pending:
                 await query.answer("لا يوجد طلب معلق (ربما تم تأكيده بالفعل).", show_alert=True)
                 return
@@ -911,10 +911,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 plan_num = "1"
 
-            await asyncio.to_thread(db.add_days_to_user, target_id, 30, plan_type=plan_num)
-            await asyncio.to_thread(db.log_activity, target_id, "تفعيل اشتراك", f"خطة {plan} - 30 يوم")
-            await asyncio.to_thread(db.log_activity, ADMIN_ID, "تأكيد دفع", f"مستخدم {target_id} - خطة {plan}")
-            new_data = await asyncio.to_thread(db.get_bot, target_id)
+            await db.add_days_to_user(target_id, 30, plan_type=plan_num)
+            await db.log_activity(target_id, "تفعيل اشتراك", f"خطة {plan} - 30 يوم")
+            await db.log_activity(ADMIN_ID, "تأكيد دفع", f"مستخدم {target_id} - خطة {plan}")
+            new_data = await db.get_bot(target_id)
             if new_data:
                 expires_at = new_data[2]
                 if isinstance(expires_at, str):
@@ -967,11 +967,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # --- جلب الأسعار والمحافظ من الإعدادات الديناميكية ---
         plan_price, usdt_rate, trx_rate, usdt_wallet, trx_wallet = await asyncio.gather(
-            asyncio.to_thread(db.get_setting, f'plan_price_{plan_num}', '0'),
-            asyncio.to_thread(db.get_setting, 'usdt_rate', '1'),
-            asyncio.to_thread(db.get_setting, 'trx_rate', '0.16'),
-            asyncio.to_thread(db.get_setting, 'usdt_wallet', 'TYourUSDTAddressHere'),
-            asyncio.to_thread(db.get_setting, 'trx_wallet', 'TSDqje1oWAcDY8Q5XzUDLWksWMSPqxv3PB'),
+            db.get_setting(f'plan_price_{plan_num}', '0'),
+            db.get_setting('usdt_rate', '1'),
+            db.get_setting('trx_rate', '0.16'),
+            db.get_setting('usdt_wallet', 'TYourUSDTAddressHere'),
+            db.get_setting('trx_wallet', 'TSDqje1oWAcDY8Q5XzUDLWksWMSPqxv3PB'),
         )
         plan_price = float(plan_price)
         usdt_rate = float(usdt_rate)
@@ -989,7 +989,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         plan_name = "حساب واحد" if plan_num == "1" else "حسابين" if plan_num == "2" else "3 حسابات"
 
-        await asyncio.to_thread(db.add_pending_subscription, user_id, plan_name, currency, amount, wallet)
+        await db.add_pending_subscription(user_id, plan_name, currency, amount, wallet)
 
         # إرسال إشعار للإدارة
         admin_msg = (
@@ -1019,7 +1019,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_dashboard(update, user_id, user_name)
         return
 
-    db_data = await asyncio.to_thread(db.get_bot, user_id)
+    db_data = await db.get_bot(user_id)
     token = db_data[0] if (db_data and len(db_data) > 0) else None
 
     if query.data == "show_token_info":
@@ -1040,7 +1040,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("⚠️ يرجى إرسال توكن البوت أولاً لربطه.")
         else:
             # جلب عدد الحسابات النشطة لمعرفة نوع البوت
-            active_accounts = await asyncio.to_thread(db.get_active_site_accounts, user_id)
+            active_accounts = await db.get_active_site_accounts(user_id)
             num_accounts = len(active_accounts) if active_accounts else 0
             if num_accounts == 1:
                 bot_type = "حساب واحد"
@@ -1102,7 +1102,7 @@ async def global_error_handler(update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     try:
-        db.init_db()
+        await db.init_db()
     except Exception as e:
         logger.error(f"Database init error: {e}")
 

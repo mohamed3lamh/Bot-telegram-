@@ -30,7 +30,7 @@ async def main():
 
     # تأكد من تهيئة قاعدة البيانات
     try:
-        db.init_db()
+        await db.init_db()
     except Exception as e:
         print(f"❌ خطأ في تهيئة قاعدة البيانات: {e}")
         return

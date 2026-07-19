@@ -199,7 +199,7 @@ class SmartCheckStrategy:
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
 
         # --- اختبار الفخ (Honeypot Test) لتأكيد حظر الظل ---
-        honeypot_number = await asyncio.to_thread(db.get_setting, "honeypot_number")
+        honeypot_number = await db.get_setting("honeypot_number")
         if honeypot_number and layer_results.get("layer1") == "NO_SESSION" and layer_results.get("layer2") == "NO_SESSION":
             if phone != honeypot_number:
                 if not hasattr(self, "_honeypot_cache"):
@@ -238,7 +238,7 @@ class SmartCheckStrategy:
                         
                         if strikes >= 2:
                             logger.error(f"[Honeypot] 🚨 Account {account['id']} FAILED honeypot for the SECOND time! Deleting it completely!")
-                            await asyncio.to_thread(db.delete_telegram_account, account["id"])
+                            await db.delete_telegram_account(account["id"])
                             account_manager.invalidate_accounts_cache()
                             return {"status": "ERROR", "phone": phone, "status_text": "❌ الحساب تالف وتم حذفه نهائياً!"}
                         else:
@@ -279,11 +279,11 @@ class SmartCheckStrategy:
             logger.info(f"[Layer 3] Direct connection returned code. Deferring to Layer 4 (External Bot).")
             
             # --- الطبقة الرابعة: بوت فحص خارجي ---
-            checker_bot = await asyncio.to_thread(db.get_setting, "checker_bot_username")
+            checker_bot = await db.get_setting("checker_bot_username")
             if checker_bot:
                 logger.info(f"[Layer 4: ExternalBot] Checking {phone} via @{checker_bot}...")
                 
-                manager_account_id = await asyncio.to_thread(db.get_setting, "external_checker_account_id")
+                manager_account_id = await db.get_setting("external_checker_account_id")
                 ext_client = client
                 
                 if manager_account_id and str(manager_account_id).isdigit():
@@ -373,7 +373,7 @@ class TelegramCheckEngine:
 
     async def check_phone(self, account, phone):
         import database as db
-        cached = await asyncio.to_thread(db.get_cached_number, phone)
+        cached = await db.get_cached_number(phone)
         if cached:
             logger.info(f"Returning cached result for {phone}: {cached['status']}")
             return cached
@@ -404,7 +404,7 @@ class TelegramCheckEngine:
         res = await self.strategy.check(client, phone, account)
         
         if res and res.get("status") in ["HAS_SESSION", "NO_SESSION", "BANNED"]:
-            await asyncio.to_thread(db.save_cached_number, res["phone"], res["status"], res["status_text"])
+            await db.save_cached_number(res["phone"], res["status"], res["status_text"])
             
         if res and res.get("status") not in ["FLOOD_WAIT", "ACCOUNT_DISABLED", "ERROR"]:
             try:

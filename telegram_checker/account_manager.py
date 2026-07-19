@@ -40,8 +40,8 @@ class AccountManager:
             if self._accounts_cache is not None and (now - self._accounts_cache_ts) < self._ACCOUNTS_CACHE_TTL:
                 return self._accounts_cache
 
-            def _fetch():
-                with get_connection() as conn:
+            async def _fetch():
+                async with get_connection() as conn:
                     cur = conn.cursor()
                     try:
                         cur.execute("""
@@ -54,7 +54,7 @@ class AccountManager:
                     finally:
                         cur.close()
 
-            rows = await asyncio.to_thread(_fetch)
+            rows = await _fetch()
 
             accounts = []
             for row in rows:
@@ -122,32 +122,32 @@ class AccountManager:
 
     async def disable_account(self, account_id):
         """ تعطيل الحساب. """
-        def _disable():
-            with get_connection() as conn:
+        async def _disable():
+            async with get_connection() as conn:
                 cur = conn.cursor()
                 try:
                     cur.execute("""
                         UPDATE telegram_accounts SET is_active = FALSE WHERE id=%s
                     """, (account_id,))
-                    conn.commit()
+                    await conn.commit()
                 finally:
                     cur.close()
-        await asyncio.to_thread(_disable)
+        await _disable()
         self.invalidate_accounts_cache()  # إبطال الكاش فوراً
 
     async def enable_account(self, account_id):
         """ إعادة تفعيل الحساب. """
-        def _enable():
-            with get_connection() as conn:
+        async def _enable():
+            async with get_connection() as conn:
                 cur = conn.cursor()
                 try:
                     cur.execute("""
                         UPDATE telegram_accounts SET is_active = TRUE WHERE id=%s
                     """, (account_id,))
-                    conn.commit()
+                    await conn.commit()
                 finally:
                     cur.close()
-        await asyncio.to_thread(_enable)
+        await _enable()
         self.invalidate_accounts_cache()  # إبطال الكاش فوراً
 
     async def get_seconds_until_next_available(self):
@@ -180,8 +180,8 @@ class AccountManager:
 
     async def get_all_disabled_accounts(self):
         """جلب الحسابات المعطلة لمحاولة استعادتها تلقائياً."""
-        def _fetch():
-            with get_connection() as conn:
+        async def _fetch():
+            async with get_connection() as conn:
                 cur = conn.cursor()
                 try:
                     cur.execute("""
@@ -193,7 +193,7 @@ class AccountManager:
                     return cur.fetchall()
                 finally:
                     cur.close()
-        rows = await asyncio.to_thread(_fetch)
+        rows = await _fetch()
         accounts = []
         for row in rows:
             accounts.append({

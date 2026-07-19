@@ -19,7 +19,7 @@ async def check_all_proxies_health():
     logger.info("[HealthChecker] Starting proxy health check run...")
     
     # جلب جميع البروكسيات من قاعدة البيانات
-    proxies = await asyncio.to_thread(db.get_all_proxies)
+    proxies = await db.get_all_proxies()
     if not proxies:
         logger.info("[HealthChecker] No proxies found in DB to check.")
         return
@@ -56,11 +56,11 @@ async def check_all_proxies_health():
             if is_alive:
                 if not p["is_active"]:
                     logger.info(f"[HealthChecker] Proxy #{proxy_id} ({host}:{port}) is alive again. Enabling.")
-                    await asyncio.to_thread(db.toggle_proxy, proxy_id, True)
+                    await db.toggle_proxy(proxy_id, True)
             else:
                 if p["is_active"]:
                     logger.warning(f"[HealthChecker] Proxy #{proxy_id} ({host}:{port}) is dead. Disabling.")
-                    await asyncio.to_thread(db.toggle_proxy, proxy_id, False)
+                    await db.toggle_proxy(proxy_id, False)
                     
         except Exception as e:
             logger.error(f"[HealthChecker] Error checking proxy #{proxy_id}: {e}")

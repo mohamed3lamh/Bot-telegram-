@@ -82,7 +82,7 @@ class ProxyPool:
         
         # جلب البروكسي المرشح للدولة من قاعدة البيانات
         # يقوم كود SQL في database.py بترتيبهم تلقائياً حسب الجودة
-        proxy = await asyncio.to_thread(db.get_proxy_for_country, country_code)
+        proxy = await db.get_proxy_for_country(country_code)
         if not proxy:
             return None
 
@@ -99,7 +99,7 @@ class ProxyPool:
         """
         import database as db
         
-        all_proxies = await asyncio.to_thread(db.get_all_proxies)
+        all_proxies = await db.get_all_proxies()
         if not all_proxies:
             return None
 
