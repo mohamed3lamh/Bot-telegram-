@@ -431,7 +431,7 @@ async def show_user_management(update: Update, page=0):
                 cursor = conn.cursor()
                 try:
                     await cursor.execute("SELECT COUNT(*) FROM user_bots")
-                    return await cursor.fetchone()[0]
+                    return (await cursor.fetchone())[0]
                 finally:
                     await cursor.close()
         total = await (_get_total)

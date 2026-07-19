@@ -419,7 +419,7 @@ async def save_site_account_v2(user_id, username, api_key):
             plan = await get_user_plan(user_id)
             max_accounts = int(plan)
             await cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s", (user_id,))
-            count = await cursor.fetchone()[0]
+            count = (await cursor.fetchone())[0]
             if count >= max_accounts:
                 raise Exception("MAX_ACCOUNTS_REACHED")
             await cursor.execute("""
@@ -454,7 +454,7 @@ async def toggle_site_account(user_id, account_id):
                 plan = await get_user_plan(user_id)
                 max_active = int(plan)
                 await cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
-                active_count = await cursor.fetchone()[0]
+                active_count = (await cursor.fetchone())[0]
                 if active_count >= max_active:
                     raise Exception("MAX_ACTIVE_REACHED")
             await cursor.execute("""
@@ -472,7 +472,7 @@ async def delete_site_account(user_id, account_id):
         try:
             await cursor.execute("DELETE FROM user_site_accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
             await cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
-            if await cursor.fetchone()[0] == 0:
+            if (await cursor.fetchone())[0] == 0:
                 await cursor.execute("UPDATE user_site_accounts SET is_active = TRUE WHERE id = (SELECT id FROM user_site_accounts WHERE user_id = %s LIMIT 1)", (user_id,))
             await conn.commit()
         finally:
