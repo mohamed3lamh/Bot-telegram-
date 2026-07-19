@@ -95,15 +95,16 @@ async def db_execute(query, params=None, commit=True, fetch=None):
 
 async def init_db():
     await init_pool()
-    with get_connection() as conn:
+    async with get_connection() as conn:
         cursor = conn.cursor()
         try:
             # تعريف دالة column_exists قبل استخدامها
-            def column_exists(table, column):
-                cursor.execute(f"SELECT COUNT(*) FROM information_schema.columns WHERE table_name='{table}' AND column_name='{column}'")
-                return cursor.fetchone()[0] > 0
+            async def column_exists(table, column):
+                await cursor.execute(f"SELECT COUNT(*) FROM information_schema.columns WHERE table_name='{table}' AND column_name='{column}'")
+                res = await cursor.fetchone()
+                return res[0] > 0
 
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_bots (
                     user_id BIGINT PRIMARY KEY,
                     token TEXT UNIQUE NOT NULL,
@@ -112,55 +113,55 @@ async def init_db():
                     is_banned INTEGER DEFAULT 0
                 )
             ''')
-            conn.commit()
+            await conn.commit()
 
             # إضافة عمود plan_type إذا لم يكن موجوداً (مع المسافة البادئة الصحيحة)
-            if not column_exists('user_bots', 'plan_type'):
-                cursor.execute("ALTER TABLE user_bots ADD COLUMN plan_type TEXT DEFAULT '1'")
-                conn.commit()
+            if not await column_exists('user_bots', 'plan_type'):
+                await cursor.execute("ALTER TABLE user_bots ADD COLUMN plan_type TEXT DEFAULT '1'")
+                await conn.commit()
 
-            if not column_exists('user_bots', 'expires_at'):
-                cursor.execute("ALTER TABLE user_bots ADD COLUMN expires_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP + INTERVAL '30 days'")
-                conn.commit()
-            if not column_exists('user_bots', 'is_banned'):
-                cursor.execute("ALTER TABLE user_bots ADD COLUMN is_banned INTEGER DEFAULT 0")
-                conn.commit()
+            if not await column_exists('user_bots', 'expires_at'):
+                await cursor.execute("ALTER TABLE user_bots ADD COLUMN expires_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP + INTERVAL '30 days'")
+                await conn.commit()
+            if not await column_exists('user_bots', 'is_banned'):
+                await cursor.execute("ALTER TABLE user_bots ADD COLUMN is_banned INTEGER DEFAULT 0")
+                await conn.commit()
 
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_hunting_channels (
                     user_id BIGINT PRIMARY KEY,
                     channel_id TEXT NOT NULL
                 )
             ''')
-            conn.commit()
+            await conn.commit()
 
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_hunting_status (
                     user_id BIGINT PRIMARY KEY,
                     is_hunting INTEGER DEFAULT 0
                 )
             ''')
-            conn.commit()
+            await conn.commit()
 
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_countries (
                     user_id BIGINT,
                     country_name TEXT,
                     PRIMARY KEY (user_id, country_name)
                 )
             ''')
-            conn.commit()
+            await conn.commit()
 
             # إضافة أعمدة الإعدادات إذا لم تكن موجودة
-            if not column_exists('user_countries', 'number_type'):
-                cursor.execute("ALTER TABLE user_countries ADD COLUMN number_type TEXT DEFAULT 'all'")
-                conn.commit()
-            if not column_exists('user_countries', 'session_status'):
-                cursor.execute("ALTER TABLE user_countries ADD COLUMN session_status TEXT DEFAULT 'all'")
-                conn.commit()
+            if not await column_exists('user_countries', 'number_type'):
+                await cursor.execute("ALTER TABLE user_countries ADD COLUMN number_type TEXT DEFAULT 'all'")
+                await conn.commit()
+            if not await column_exists('user_countries', 'session_status'):
+                await cursor.execute("ALTER TABLE user_countries ADD COLUMN session_status TEXT DEFAULT 'all'")
+                await conn.commit()
                 
             # --- ترقية جدول حسابات الموقع إلى V2 (متعدد) ---
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS user_site_accounts_v2 (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -170,34 +171,34 @@ async def init_db():
                     UNIQUE(user_id, username)
                 )
             """)
-            conn.commit()
+            await conn.commit()
 
             # نقل البيانات القديمة إذا كان الجدول القديم موجوداً ولم تتم ترقيته
-            if not column_exists('user_site_accounts_v2', 'is_active') and column_exists('user_site_accounts', 'username') and not column_exists('user_site_accounts', 'id'):
+            if not await column_exists('user_site_accounts_v2', 'is_active') and column_exists('user_site_accounts', 'username') and not column_exists('user_site_accounts', 'id'):
                 logger.info("Migrating old user_site_accounts to v2...")
                 try:
-                    cursor.execute("""
+                    await cursor.execute("""
                         INSERT INTO user_site_accounts_v2 (user_id, username, api_key, is_active)
                         SELECT user_id, username, api_key, TRUE
                         FROM user_site_accounts
                         ON CONFLICT (user_id, username) DO NOTHING
                     """)
-                    conn.commit()
-                    cursor.execute("DROP TABLE user_site_accounts")
-                    conn.commit()
+                    await conn.commit()
+                    await cursor.execute("DROP TABLE user_site_accounts")
+                    await conn.commit()
                 except Exception as e:
                     logger.warning(f"Migration error: {e}")
                     conn.rollback()
 
             # إعادة تسمية v2 إلى الاسم الأصلي
             if column_exists('user_site_accounts_v2', 'is_active'):
-                cursor.execute("DROP TABLE IF EXISTS user_site_accounts")
-                conn.commit()
-                cursor.execute("ALTER TABLE user_site_accounts_v2 RENAME TO user_site_accounts")
-                conn.commit()
+                await cursor.execute("DROP TABLE IF EXISTS user_site_accounts")
+                await conn.commit()
+                await cursor.execute("ALTER TABLE user_site_accounts_v2 RENAME TO user_site_accounts")
+                await conn.commit()
                 logger.info("Renamed user_site_accounts_v2 to user_site_accounts")
             else:
-                cursor.execute("""
+                await cursor.execute("""
                     CREATE TABLE IF NOT EXISTS user_site_accounts (
                         id SERIAL PRIMARY KEY,
                         user_id BIGINT NOT NULL,
@@ -207,10 +208,10 @@ async def init_db():
                         UNIQUE(user_id, username)
                     )
                 """)
-                conn.commit()
+                await conn.commit()
 
             # جدول حسابات الفحص
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS telegram_accounts (
                     id SERIAL PRIMARY KEY,
                     phone TEXT UNIQUE NOT NULL,
@@ -224,22 +225,22 @@ async def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            conn.commit()
+            await conn.commit()
 
-            if not column_exists('telegram_accounts', 'is_active'):
-                cursor.execute("ALTER TABLE telegram_accounts ADD COLUMN is_active BOOLEAN DEFAULT TRUE")
-                conn.commit()
-            if not column_exists('telegram_accounts', 'total_checks'):
-                cursor.execute("ALTER TABLE telegram_accounts ADD COLUMN total_checks INTEGER DEFAULT 0")
-                conn.commit()
+            if not await column_exists('telegram_accounts', 'is_active'):
+                await cursor.execute("ALTER TABLE telegram_accounts ADD COLUMN is_active BOOLEAN DEFAULT TRUE")
+                await conn.commit()
+            if not await column_exists('telegram_accounts', 'total_checks'):
+                await cursor.execute("ALTER TABLE telegram_accounts ADD COLUMN total_checks INTEGER DEFAULT 0")
+                await conn.commit()
             if column_exists('telegram_accounts', 'status'):
                 try:
-                    cursor.execute("ALTER TABLE telegram_accounts DROP COLUMN status")
-                    conn.commit()
+                    await cursor.execute("ALTER TABLE telegram_accounts DROP COLUMN status")
+                    await conn.commit()
                 except:
                     pass
 
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS activity_log (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT,
@@ -248,24 +249,24 @@ async def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            conn.commit()
+            await conn.commit()
 
             # ---------- فهارس الأداء (تُنشأ مرة واحدة فقط بشكل آمن) ----------
             # تسريع ORDER BY created_at DESC في سجل العمليات
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_activity_log_created_at
                 ON activity_log (created_at DESC)
             """)
-            conn.commit()
+            await conn.commit()
             # تسريع الفلترة بالمستخدم في سجل العمليات
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_activity_log_user_id
                 ON activity_log (user_id)
             """)
-            conn.commit()
+            await conn.commit()
 
             # ---------- تذاكر الدعم ----------
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS support_tickets (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -277,46 +278,46 @@ async def init_db():
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            conn.commit()
+            await conn.commit()
 
             # فهارس تذاكر الدعم
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at
                 ON support_tickets (created_at DESC)
             """)
-            conn.commit()
-            cursor.execute("""
+            await conn.commit()
+            await cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_support_tickets_user_id
                 ON support_tickets (user_id)
             """)
-            conn.commit()
+            await conn.commit()
             # فهارس الحسابات الفاحصة لتسريع استعلامات الفحص
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_telegram_accounts_is_active
                 ON telegram_accounts (is_active, flood_until)
             """)
-            conn.commit()
+            await conn.commit()
             # فهارس حسابات المستخدمين لتسريع جلبها في كل دورة صيد
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_user_site_accounts_user_id_active
                 ON user_site_accounts (user_id, is_active)
             """)
-            conn.commit()
+            await conn.commit()
             # فهارس دول المستخدمين
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_user_countries_user_id
                 ON user_countries (user_id)
             """)
-            conn.commit()
+            await conn.commit()
 
             # ---------- إعدادات الأسعار والمحافظ ----------
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 )
             """)
-            conn.commit()
+            await conn.commit()
 
             # إدخال القيم الافتراضية للإعدادات إذا لم تكن موجودة
             defaults = {
@@ -329,13 +330,13 @@ async def init_db():
                 'trx_rate': '0.16'   # 1 TRX = 0.16 USD (مثال، يحدد السعر)
             }
             for k, v in defaults.items():
-                cursor.execute("""
+                await cursor.execute("""
                     INSERT INTO settings (key, value) VALUES (%s, %s)
                     ON CONFLICT (key) DO NOTHING
                 """, (k, v))
-            conn.commit()
+            await conn.commit()
 
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS pending_subscriptions (
                     user_id BIGINT PRIMARY KEY,
                     plan TEXT NOT NULL,
@@ -345,10 +346,10 @@ async def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            conn.commit()
+            await conn.commit()
 
             # ---------- جدول البروكسيات ----------
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS proxies (
                     id SERIAL PRIMARY KEY,
                     country_code TEXT NOT NULL,
@@ -361,40 +362,40 @@ async def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            conn.commit()
+            await conn.commit()
 
             # فهرس على country_code لتسريع البحث
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_proxies_country_code
                 ON proxies (country_code, is_active)
             """)
-            conn.commit()
+            await conn.commit()
 
             # ترقية جدول البروكسيات وإضافة الحقول الجديدة
-            if not column_exists('proxies', 'provider'):
-                cursor.execute("ALTER TABLE proxies ADD COLUMN provider TEXT DEFAULT 'STATIC'")
-                conn.commit()
-            if not column_exists('proxies', 'success_count'):
-                cursor.execute("ALTER TABLE proxies ADD COLUMN success_count INTEGER DEFAULT 0")
-                conn.commit()
-            if not column_exists('proxies', 'failure_count'):
-                cursor.execute("ALTER TABLE proxies ADD COLUMN failure_count INTEGER DEFAULT 0")
-                conn.commit()
-            if not column_exists('proxies', 'avg_latency'):
-                cursor.execute("ALTER TABLE proxies ADD COLUMN avg_latency REAL DEFAULT 0.0")
-                conn.commit()
-            if not column_exists('proxies', 'flood_count'):
-                cursor.execute("ALTER TABLE proxies ADD COLUMN flood_count INTEGER DEFAULT 0")
-                conn.commit()
-            if not column_exists('proxies', 'last_used'):
-                cursor.execute("ALTER TABLE proxies ADD COLUMN last_used TIMESTAMP NULL")
-                conn.commit()
-            if not column_exists('proxies', 'rotation_url'):
-                cursor.execute("ALTER TABLE proxies ADD COLUMN rotation_url TEXT NULL")
-                conn.commit()
+            if not await column_exists('proxies', 'provider'):
+                await cursor.execute("ALTER TABLE proxies ADD COLUMN provider TEXT DEFAULT 'STATIC'")
+                await conn.commit()
+            if not await column_exists('proxies', 'success_count'):
+                await cursor.execute("ALTER TABLE proxies ADD COLUMN success_count INTEGER DEFAULT 0")
+                await conn.commit()
+            if not await column_exists('proxies', 'failure_count'):
+                await cursor.execute("ALTER TABLE proxies ADD COLUMN failure_count INTEGER DEFAULT 0")
+                await conn.commit()
+            if not await column_exists('proxies', 'avg_latency'):
+                await cursor.execute("ALTER TABLE proxies ADD COLUMN avg_latency REAL DEFAULT 0.0")
+                await conn.commit()
+            if not await column_exists('proxies', 'flood_count'):
+                await cursor.execute("ALTER TABLE proxies ADD COLUMN flood_count INTEGER DEFAULT 0")
+                await conn.commit()
+            if not await column_exists('proxies', 'last_used'):
+                await cursor.execute("ALTER TABLE proxies ADD COLUMN last_used TIMESTAMP NULL")
+                await conn.commit()
+            if not await column_exists('proxies', 'rotation_url'):
+                await cursor.execute("ALTER TABLE proxies ADD COLUMN rotation_url TEXT NULL")
+                await conn.commit()
 
             # ---------- التخزين المؤقت للأرقام المفحوصة ----------
-            cursor.execute("""
+            await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS checked_numbers_cache (
                     phone VARCHAR(50) PRIMARY KEY,
                     status VARCHAR(50) NOT NULL,
@@ -402,105 +403,105 @@ async def init_db():
                     checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            conn.commit()
-            cursor.execute("DELETE FROM checked_numbers_cache WHERE checked_at < NOW() - INTERVAL '14 days'")
-            conn.commit()
+            await conn.commit()
+            await cursor.execute("DELETE FROM checked_numbers_cache WHERE checked_at < NOW() - INTERVAL '14 days'")
+            await conn.commit()
 
         finally:
-            cursor.close()
+            await cursor.close()
 
 # --- دوال حسابات DurianRCS (متعددة) ---
 async def save_site_account_v2(user_id, username, api_key):
-    with get_connection() as conn:
+    async with get_connection() as conn:
         cursor = conn.cursor()
         try:
             # حد الحسابات بناءً على الخطة
             plan = get_user_plan(user_id)
             max_accounts = int(plan)
-            cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s", (user_id,))
-            count = cursor.fetchone()[0]
+            await cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s", (user_id,))
+            count = await cursor.fetchone()[0]
             if count >= max_accounts:
                 raise Exception("MAX_ACCOUNTS_REACHED")
-            cursor.execute("""
+            await cursor.execute("""
                 INSERT INTO user_site_accounts (user_id, username, api_key, is_active)
                 VALUES (%s, %s, %s, TRUE)
                 ON CONFLICT (user_id, username) DO UPDATE SET api_key = EXCLUDED.api_key, is_active = TRUE
             """, (user_id, username, api_key))
-            conn.commit()
+            await conn.commit()
         finally:
-            cursor.close()
+            await cursor.close()
 
 async def get_all_site_accounts(user_id):
-    with get_connection() as conn:
+    async with get_connection() as conn:
         cursor = conn.cursor()
         try:
-            cursor.execute("SELECT id, username, api_key, is_active FROM user_site_accounts WHERE user_id = %s ORDER BY id", (user_id,))
-            rows = cursor.fetchall()
+            await cursor.execute("SELECT id, username, api_key, is_active FROM user_site_accounts WHERE user_id = %s ORDER BY id", (user_id,))
+            rows = await cursor.fetchall()
             return rows
         finally:
-            cursor.close()
+            await cursor.close()
 
 async def toggle_site_account(user_id, account_id):
-    with get_connection() as conn:
+    async with get_connection() as conn:
         cursor = conn.cursor()
         try:
-            cursor.execute("SELECT is_active FROM user_site_accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
-            row = cursor.fetchone()
+            await cursor.execute("SELECT is_active FROM user_site_accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
+            row = await cursor.fetchone()
             if not row:
                 return
             current_status = row[0]
             if not current_status:  # سيُفعّل الآن
                 plan = get_user_plan(user_id)
                 max_active = int(plan)
-                cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
-                active_count = cursor.fetchone()[0]
+                await cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
+                active_count = await cursor.fetchone()[0]
                 if active_count >= max_active:
                     raise Exception("MAX_ACTIVE_REACHED")
-            cursor.execute("""
+            await cursor.execute("""
                 UPDATE user_site_accounts
                 SET is_active = NOT is_active
                 WHERE id = %s AND user_id = %s
             """, (account_id, user_id))
-            conn.commit()
+            await conn.commit()
         finally:
-            cursor.close()
+            await cursor.close()
 
 async def delete_site_account(user_id, account_id):
-    with get_connection() as conn:
+    async with get_connection() as conn:
         cursor = conn.cursor()
         try:
-            cursor.execute("DELETE FROM user_site_accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
-            cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
-            if cursor.fetchone()[0] == 0:
-                cursor.execute("UPDATE user_site_accounts SET is_active = TRUE WHERE id = (SELECT id FROM user_site_accounts WHERE user_id = %s LIMIT 1)", (user_id,))
-            conn.commit()
+            await cursor.execute("DELETE FROM user_site_accounts WHERE id = %s AND user_id = %s", (account_id, user_id))
+            await cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
+            if await cursor.fetchone()[0] == 0:
+                await cursor.execute("UPDATE user_site_accounts SET is_active = TRUE WHERE id = (SELECT id FROM user_site_accounts WHERE user_id = %s LIMIT 1)", (user_id,))
+            await conn.commit()
         finally:
-            cursor.close()
+            await cursor.close()
 
 async def get_site_account(user_id):
     """الحساب النشط فقط"""
-    with get_connection() as conn:
+    async with get_connection() as conn:
         cursor = conn.cursor()
         try:
-            cursor.execute("SELECT username, api_key FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE LIMIT 1", (user_id,))
-            row = cursor.fetchone()
+            await cursor.execute("SELECT username, api_key FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE LIMIT 1", (user_id,))
+            row = await cursor.fetchone()
             return row
         finally:
-            cursor.close()
+            await cursor.close()
 
 async def get_active_site_accounts(user_id):
     """استرجاع جميع حسابات الموقع النشطة للمستخدم"""
-    with get_connection() as conn:
+    async with get_connection() as conn:
         cursor = conn.cursor()
         try:
-            cursor.execute(
+            await cursor.execute(
                 "SELECT username, api_key FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE",
                 (user_id,)
             )
-            rows = cursor.fetchall()
+            rows = await cursor.fetchall()
             return rows  # list of (username, api_key)
         finally:
-            cursor.close()
+            await cursor.close()
 
 # --- باقي الدوال (موجودة مسبقاً) ---
 async def save_bot(user_id, token):
