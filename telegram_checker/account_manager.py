@@ -44,15 +44,15 @@ class AccountManager:
                 async with get_connection() as conn:
                     cur = conn.cursor()
                     try:
-                        cur.execute("""
+                        await cur.execute("""
                             SELECT id, api_id, api_hash, string_session, is_active, flood_until, phone
                             FROM telegram_accounts
                             WHERE is_active = TRUE
                             ORDER BY id ASC
                         """)
-                        return cur.fetchall()
+                        return await cur.fetchall()
                     finally:
-                        cur.close()
+                        await cur.close()
 
             rows = await _fetch()
 
@@ -126,12 +126,12 @@ class AccountManager:
             async with get_connection() as conn:
                 cur = conn.cursor()
                 try:
-                    cur.execute("""
+                    await cur.execute("""
                         UPDATE telegram_accounts SET is_active = FALSE WHERE id=%s
                     """, (account_id,))
                     await conn.commit()
                 finally:
-                    cur.close()
+                    await cur.close()
         await _disable()
         self.invalidate_accounts_cache()  # إبطال الكاش فوراً
 
@@ -141,12 +141,12 @@ class AccountManager:
             async with get_connection() as conn:
                 cur = conn.cursor()
                 try:
-                    cur.execute("""
+                    await cur.execute("""
                         UPDATE telegram_accounts SET is_active = TRUE WHERE id=%s
                     """, (account_id,))
                     await conn.commit()
                 finally:
-                    cur.close()
+                    await cur.close()
         await _enable()
         self.invalidate_accounts_cache()  # إبطال الكاش فوراً
 
@@ -184,15 +184,15 @@ class AccountManager:
             async with get_connection() as conn:
                 cur = conn.cursor()
                 try:
-                    cur.execute("""
+                    await cur.execute("""
                         SELECT id, api_id, api_hash, string_session, is_active, flood_until, phone
                         FROM telegram_accounts
                         WHERE is_active = FALSE
                         ORDER BY id ASC
                     """)
-                    return cur.fetchall()
+                    return await cur.fetchall()
                 finally:
-                    cur.close()
+                    await cur.close()
         rows = await _fetch()
         accounts = []
         for row in rows:

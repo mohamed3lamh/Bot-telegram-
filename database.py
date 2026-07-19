@@ -216,7 +216,7 @@ async def init_db():
             await conn.commit()
 
             # نقل البيانات القديمة إذا كان الجدول القديم موجوداً ولم تتم ترقيته
-            if not await column_exists('user_site_accounts_v2', 'is_active') and column_exists('user_site_accounts', 'username') and not column_exists('user_site_accounts', 'id'):
+            if not await column_exists('user_site_accounts_v2', 'is_active') and await column_exists('user_site_accounts', 'username') and not await column_exists('user_site_accounts', 'id'):
                 logger.info("Migrating old user_site_accounts to v2...")
                 try:
                     await cursor.execute("""
@@ -233,7 +233,7 @@ async def init_db():
                     conn.rollback()
 
             # إعادة تسمية v2 إلى الاسم الأصلي
-            if column_exists('user_site_accounts_v2', 'is_active'):
+            if await column_exists('user_site_accounts_v2', 'is_active'):
                 await cursor.execute("DROP TABLE IF EXISTS user_site_accounts")
                 await conn.commit()
                 await cursor.execute("ALTER TABLE user_site_accounts_v2 RENAME TO user_site_accounts")
@@ -275,7 +275,7 @@ async def init_db():
             if not await column_exists('telegram_accounts', 'total_checks'):
                 await cursor.execute("ALTER TABLE telegram_accounts ADD COLUMN total_checks INTEGER DEFAULT 0")
                 await conn.commit()
-            if column_exists('telegram_accounts', 'status'):
+            if await column_exists('telegram_accounts', 'status'):
                 try:
                     await cursor.execute("ALTER TABLE telegram_accounts DROP COLUMN status")
                     await conn.commit()
