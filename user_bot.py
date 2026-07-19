@@ -298,13 +298,17 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
     logger.warning(f"CALLBACK RECEIVED: user={user_id}, data={data}")
 
     if data == "main_menu":
+        await query.answer()
         await start_user_bot(update, context)
     elif data == "bot_settings":
+        await query.answer()
         await show_settings(update, user_id)
     elif data == "manage_accounts":
+        await query.answer()
         await show_manage_accounts(update, user_id)
         return
     elif data.startswith("account_detail_"):
+        await query.answer()
         acc_id = int(data.split("_")[2])
         await show_account_detail(update, user_id, acc_id)
         return
@@ -362,6 +366,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
         await query.message.reply_text("📥 فضلاً، أرسل الآن **اسم المستخدم (Username)** الخاص بحسابك في موقع DurianRCS:")
         
     elif data == "manage_countries":
+        await query.answer()
         await show_manage_countries(update, user_id)
         return
     elif data.startswith("delete_country_"):
