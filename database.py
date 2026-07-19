@@ -8,6 +8,48 @@ from urllib.parse import urlparse
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+import time
+import asyncio
+
+class AsyncTTLCache:
+    def __init__(self, ttl_seconds=60):
+        self.cache = {}
+        self.ttl = ttl_seconds
+        self.lock = asyncio.Lock()
+
+    async def get(self, key):
+        async with self.lock:
+            if key in self.cache:
+                value, expiry = self.cache[key]
+                if time.time() < expiry:
+                    return value
+                else:
+                    del self.cache[key]
+            return None
+
+    async def set(self, key, value, ttl=None):
+        async with self.lock:
+            _ttl = ttl if ttl is not None else self.ttl
+            self.cache[key] = (value, time.time() + _ttl)
+
+    async def delete(self, key):
+        async with self.lock:
+            if key in self.cache:
+                del self.cache[key]
+
+    async def clear(self):
+        async with self.lock:
+            self.cache.clear()
+
+# Cache Instances
+settings_cache = AsyncTTLCache(ttl_seconds=600)
+user_cache = AsyncTTLCache(ttl_seconds=300)
+bot_cache = AsyncTTLCache(ttl_seconds=300)
+accounts_cache = AsyncTTLCache(ttl_seconds=300)
+countries_cache = AsyncTTLCache(ttl_seconds=300)
+
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 _pool = None
@@ -412,6 +454,7 @@ async def init_db():
 
 # --- دوال حسابات DurianRCS (متعددة) ---
 async def save_site_account_v2(user_id, username, api_key):
+    await accounts_cache.delete(user_id)
     async with get_connection() as conn:
         cursor = conn.cursor()
         try:
@@ -442,6 +485,7 @@ async def get_all_site_accounts(user_id):
             await cursor.close()
 
 async def toggle_site_account(user_id, account_id):
+    await accounts_cache.delete(user_id)
     async with get_connection() as conn:
         cursor = conn.cursor()
         try:
@@ -467,6 +511,7 @@ async def toggle_site_account(user_id, account_id):
             await cursor.close()
 
 async def delete_site_account(user_id, account_id):
+    await accounts_cache.delete(user_id)
     async with get_connection() as conn:
         cursor = conn.cursor()
         try:
@@ -739,6 +784,7 @@ async def get_setting(key, default=None):
     return default
 
 async def set_setting(key, value):
+    await settings_cache.set(key, value)
     await db_execute("""
         INSERT INTO settings (key, value) VALUES (%s, %s)
         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
