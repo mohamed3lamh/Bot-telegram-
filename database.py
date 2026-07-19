@@ -416,7 +416,7 @@ async def save_site_account_v2(user_id, username, api_key):
         cursor = conn.cursor()
         try:
             # حد الحسابات بناءً على الخطة
-            plan = get_user_plan(user_id)
+            plan = await get_user_plan(user_id)
             max_accounts = int(plan)
             await cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s", (user_id,))
             count = await cursor.fetchone()[0]
@@ -451,7 +451,7 @@ async def toggle_site_account(user_id, account_id):
                 return
             current_status = row[0]
             if not current_status:  # سيُفعّل الآن
-                plan = get_user_plan(user_id)
+                plan = await get_user_plan(user_id)
                 max_active = int(plan)
                 await cursor.execute("SELECT COUNT(*) FROM user_site_accounts WHERE user_id = %s AND is_active = TRUE", (user_id,))
                 active_count = await cursor.fetchone()[0]

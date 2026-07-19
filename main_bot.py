@@ -199,8 +199,7 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         
                         ptype = 'HTTP' if port in (80, 443) else 'SOCKS5'
                         
-                        await (
-                            db.add_proxy, 
+                        await db.add_proxy( 
                             country_code, 
                             host, 
                             port, 
