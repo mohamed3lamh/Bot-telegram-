@@ -81,7 +81,7 @@ class AsyncCursor:
                 self._last_result = await self.conn.fetch(query, *params)
             else:
                 self._last_result = await self.conn.fetch(query)
-        except asyncpg.exceptions.QueryWithoutReturingError:
+        except Exception:
             if params:
                 await self.conn.execute(query, *params)
             else:
