@@ -415,7 +415,10 @@ async def show_user_detail(update: Update, user_id: int):
     query = update.callback_query
     data = await db.get_bot(user_id)
     if not data:
-        await query.answer("المستخدم غير موجود", show_alert=True)
+        if query:
+            await query.answer("المستخدم غير موجود", show_alert=True)
+        else:
+            await update.message.reply_text("❌ المستخدم غير موجود.")
         return
     token, is_active, expires_at, is_banned = data
     status = "نشط" if is_active else "متوقف"
@@ -448,7 +451,10 @@ async def show_user_detail(update: Update, user_id: int):
         [InlineKeyboardButton("🔙 عودة للقائمة", callback_data="adm_user_management")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    if query:
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
 # ---------- سجل العمليات ----------
 async def show_activity_log(update: Update):
