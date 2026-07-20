@@ -135,49 +135,24 @@ async def handle_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID != 0 and user_id == ADMIN_ID and context.user_data.get("admin_action"):
         action = context.user_data.get("admin_action")
         table_name = get_correct_table_name()
-        if action == "add_days":
-            try:
-                target_id, value = text.split(" ")
-                target_id = int(target_id)
-                await db.add_days_to_user(target_id, int(value))
-                await db.log_activity(user_id, "إضافة أيام", f"للمستخدم {target_id} - {value} يوم")
-                await update.message.reply_text(f"✅ تم إضافة {value} يوم للمستخدم `{target_id}` بنجاح.")
-            except Exception:
-                await update.message.reply_text("❌ صيغة خاطئة. يرجى إدخال: `المعرف القيمة` (مثال: `834033986 30`)")
-            context.user_data.pop("admin_action", None)
-            return
-        elif action == "ban":
-            try:
-                target_id, value = text.split(" ")
-                target_id = int(target_id)
-                await db.ban_user(target_id, int(value))
-                await db.log_activity(user_id, "حظر/إلغاء حظر", f"مستخدم {target_id} - حالة {value}")
-                status_text = "حظر" if int(value) == 1 else "إلغاء حظر"
-                await update.message.reply_text(f"✅ تم تعديل حالة المستخدم `{target_id}` إلى: **{status_text}**.")
-            except Exception:
-                await update.message.reply_text("❌ صيغة خاطئة. يرجى إدخال: `المعرف القيمة` (مثال للحظر: `834033986 1`)")
-            context.user_data.pop("admin_action", None)
-            return
-        elif action == "delete_user":
+        if action == "search_user":
             try:
                 target_id = int(text)
-                try:
-                    await bot_manager.stop_bot(target_id)
-                except Exception:
-                    pass
-                async def _delete_user():
-                    async with db.get_connection() as conn:
-                        cursor = conn.cursor()
-                        try:
-                            await cursor.execute(f"DELETE FROM {table_name} WHERE user_id = %s", (target_id,))
-                            await conn.commit()
-                        finally:
-                            await cursor.close()
-                await _delete_user()
-                await db.log_activity(user_id, "حذف مستخدم", f"المستخدم {target_id}")
-                await update.message.reply_text(f"🗑️ تم حذف المستخدم `{target_id}` نهائياً من الجدول `{table_name}` وإيقاف خط السحب الخاص به.")
-            except Exception as e:
-                await update.message.reply_text(f"❌ فشل تنفيذ الحذف. الخطأ: {e}")
+                await show_user_detail(update, target_id)
+            except Exception:
+                await update.message.reply_text("❌ رقم ID غير صحيح.")
+            context.user_data.pop("admin_action", None)
+            return
+        elif action.startswith("add_days_to_"):
+            try:
+                target_id = int(action.split("_")[-1])
+                days = int(text)
+                await db.add_days_to_user(target_id, days)
+                await db.log_activity(user_id, "إضافة أيام", f"للمستخدم {target_id} - {days} يوم")
+                await update.message.reply_text(f"✅ تم إضافة {days} يوم للمستخدم `{target_id}` بنجاح.")
+                await show_user_detail(update, target_id)
+            except Exception:
+                await update.message.reply_text("❌ صيغة خاطئة. يرجى إرسال عدد الأيام فقط (رقم).")
             context.user_data.pop("admin_action", None)
             return
         elif action == "add_proxy":
@@ -343,19 +318,9 @@ async def show_admin_panel(update: Update):
 
     keyboard = [
         [
-            InlineKeyboardButton("➕ شحن/تجديد الأيام", callback_data="adm_add_days"),
-            InlineKeyboardButton("🚫 حظر / إلغاء حظر", callback_data="adm_ban")
+            InlineKeyboardButton("👥 إدارة المستخدمين", callback_data="adm_user_management")
         ],
         [
-            InlineKeyboardButton("🗑️ حذف مستخدم نهائياً", callback_data="adm_delete_user"),
-            InlineKeyboardButton("🆔 استخراج الـ IDs", callback_data="adm_get_ids")
-        ],
-        [
-            InlineKeyboardButton("👥 إدارة المستخدمين", callback_data="adm_user_management"),
-            InlineKeyboardButton("📋 سجل العمليات", callback_data="adm_activity_log")
-        ],
-        [
-            InlineKeyboardButton("🎫 تذاكر الدعم", callback_data="adm_tickets"),
             InlineKeyboardButton("⚙️ إعدادات الأسعار", callback_data="adm_settings")
         ],
         [
@@ -440,6 +405,7 @@ async def show_user_management(update: Update, page=0):
             nav_row.append(InlineKeyboardButton("التالي ➡️", callback_data=f"user_page_{page+1}"))
         if nav_row:
             keyboard.append(nav_row)
+        keyboard.append([InlineKeyboardButton("🔍 بحث عن مستخدم", callback_data="adm_search_user")])
         keyboard.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="admin_panel")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -462,17 +428,22 @@ async def show_user_detail(update: Update, user_id: int):
     # عدد الحسابات المربوطة
     accounts = await db.get_all_site_accounts(user_id)
     num_accounts = len(accounts)
+    plan_text = await db.get_user_plan(user_id)
     text = (
         f"👤 **معلومات المستخدم:**\n"
         f"🆔 المعرف: `{user_id}`\n"
         f"📌 الحالة: {status}\n"
         f"🚫 محظور: {banned}\n"
         f"⏰ انتهاء الاشتراك: {exp_text}\n"
+        f"📊 الخطة: {plan_text} حساب(ات)\n"
         f"🗂 حسابات DurianRCS: {num_accounts}\n"
     )
     keyboard = [
         [InlineKeyboardButton("➕ إضافة أيام", callback_data=f"adm_add_days_{user_id}"),
          InlineKeyboardButton("🚫 حظر/إلغاء", callback_data=f"adm_ban_{user_id}")],
+        [InlineKeyboardButton("1️⃣ خطة حساب واحد", callback_data=f"adm_ch_plan_{user_id}_1"),
+         InlineKeyboardButton("2️⃣ خطة حسابين", callback_data=f"adm_ch_plan_{user_id}_2")],
+        [InlineKeyboardButton("3️⃣ خطة 3 حسابات", callback_data=f"adm_ch_plan_{user_id}_3")],
         [InlineKeyboardButton("🗑️ حذف المستخدم", callback_data=f"adm_delete_user_{user_id}")],
         [InlineKeyboardButton("🔙 عودة للقائمة", callback_data="adm_user_management")]
     ]
@@ -826,18 +797,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer(f"✅ تم {status_text} البروكسي", show_alert=True)
             await show_proxy_management(update)
             return
-        elif query.data == "adm_add_days":
-            context.user_data["admin_action"] = "add_days"
-            await query.message.reply_text("📥 أرسل معرف المستخدم وعدد الأيام مفصولين بمسافة:\nمثال: `834033986 30`")
-            return
-        elif query.data == "adm_ban":
-            context.user_data["admin_action"] = "ban"
-            await query.message.reply_text("📥 أرسل معرف المستخدم وحالته مفصولين بمسافة:\n(`1` للحظر أو `0` لإلغاء الحظر)\nمثال: `834033986 1`")
-            return
-        elif query.data == "adm_delete_user":
-            context.user_data["admin_action"] = "delete_user"
-            await query.message.reply_text("🗑️ أرسل `ID المستخدم` المراد مسحه تماماً من السيرفر وإلغاء بوتاته:")
-            return
         elif query.data == "adm_get_ids":
             try:
                 table_name = get_correct_table_name()
@@ -871,6 +830,54 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data.startswith("user_detail_"):
             uid = int(query.data.split("_")[-1])
             await show_user_detail(update, uid)
+            return
+        elif query.data == "adm_search_user":
+            context.user_data["admin_action"] = "search_user"
+            await query.message.reply_text("🔍 أرسل الـ `ID` الخاص بالمستخدم للبحث عنه:")
+            return
+        elif query.data.startswith("adm_add_days_"):
+            uid = query.data.split("_")[-1]
+            context.user_data["admin_action"] = f"add_days_to_{uid}"
+            await query.message.reply_text(f"➕ أرسل عدد الأيام التي تريد إضافتها للمستخدم `{uid}`:")
+            return
+        elif query.data.startswith("adm_ban_"):
+            uid = int(query.data.split("_")[-1])
+            user_data = await db.get_bot(uid)
+            if user_data:
+                is_banned = user_data[3]
+                new_status = 0 if is_banned else 1
+                await db.ban_user(uid, new_status)
+                status_text = "إلغاء حظر" if new_status == 0 else "حظر"
+                await query.answer(f"✅ تم {status_text} المستخدم {uid}", show_alert=True)
+                await show_user_detail(update, uid)
+            return
+        elif query.data.startswith("adm_ch_plan_"):
+            parts = query.data.split("_")
+            uid = int(parts[-2])
+            plan = parts[-1]
+            await db.db_execute("UPDATE user_bots SET plan_type = %s WHERE user_id = %s", (plan, uid))
+            await query.answer(f"✅ تم تغيير خطة المستخدم إلى {plan} حساب(ات)", show_alert=True)
+            await show_user_detail(update, uid)
+            return
+        elif query.data.startswith("adm_delete_user_"):
+            uid = int(query.data.split("_")[-1])
+            keyboard = [
+                [InlineKeyboardButton("⚠️ نعم، متأكد من الحذف", callback_data=f"adm_confirm_del_{uid}")],
+                [InlineKeyboardButton("🔙 إلغاء", callback_data=f"user_detail_{uid}")]
+            ]
+            await query.edit_message_text(f"هل أنت متأكد من رغبتك في حذف المستخدم `{uid}` ومسح جميع بياناته نهائياً؟", reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+        elif query.data.startswith("adm_confirm_del_"):
+            uid = int(query.data.split("_")[-1])
+            try:
+                await bot_manager.stop_bot(uid)
+            except Exception:
+                pass
+            await db.db_execute("DELETE FROM user_bots WHERE user_id = %s", (uid,))
+            await db.db_execute("DELETE FROM user_site_accounts WHERE user_id = %s", (uid,))
+            await db.db_execute("DELETE FROM user_hunting_channels WHERE user_id = %s", (uid,))
+            await query.answer("✅ تم حذف المستخدم بنجاح.", show_alert=True)
+            await show_user_management(update, 0)
             return
         elif query.data == "adm_activity_log":
             await show_activity_log(update)
