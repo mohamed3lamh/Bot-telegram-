@@ -125,8 +125,7 @@ class LoginManager:
         me = await client.get_me()
         string_session = client.session.save()
         
-        await asyncio.to_thread(
-            save_telegram_account,
+        await save_telegram_account(
             phone=phone,
             api_id=data["api_id"],
             api_hash=data["api_hash"],
