@@ -563,28 +563,28 @@ async def add_days_to_user(user_id, days, plan_type=None):
         if plan_type:
             await db_execute('''
                 UPDATE user_bots
-                SET expires_at = GREATEST(expires_at, CURRENT_TIMESTAMP) + CAST(%s AS INTERVAL),
+                SET expires_at = GREATEST(expires_at, CURRENT_TIMESTAMP) + INTERVAL '1 day' * %s,
                     plan_type = %s
                 WHERE user_id = %s
-            ''', (f"{days} days", plan_type, user_id))
+            ''', (int(days), str(plan_type), user_id))
         else:
             await db_execute('''
                 UPDATE user_bots
-                SET expires_at = GREATEST(expires_at, CURRENT_TIMESTAMP) + CAST(%s AS INTERVAL)
+                SET expires_at = GREATEST(expires_at, CURRENT_TIMESTAMP) + INTERVAL '1 day' * %s
                 WHERE user_id = %s
-            ''', (f"{days} days", user_id))
+            ''', (int(days), user_id))
     else:
         temp_token = f'pending_{user_id}'
         if plan_type:
             await db_execute('''
                 INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned, plan_type)
-                VALUES (%s, %s, 0, CURRENT_TIMESTAMP + CAST(%s AS INTERVAL), 0, %s)
-            ''', (user_id, temp_token, f"{days} days", plan_type))
+                VALUES (%s, %s, 0, CURRENT_TIMESTAMP + INTERVAL '1 day' * %s, 0, %s)
+            ''', (user_id, temp_token, int(days), str(plan_type)))
         else:
             await db_execute('''
                 INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned)
-                VALUES (%s, %s, 0, CURRENT_TIMESTAMP + CAST(%s AS INTERVAL), 0)
-            ''', (user_id, temp_token, f"{days} days"))
+                VALUES (%s, %s, 0, CURRENT_TIMESTAMP + INTERVAL '1 day' * %s, 0)
+            ''', (user_id, temp_token, int(days)))
 
 async def get_user_plan(user_id):
     """جلب نوع خطة المستخدم (1, 2, 3)"""
