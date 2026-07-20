@@ -364,7 +364,7 @@ async def show_user_management(update: Update, page=0):
                     return await cursor.fetchall()
                 finally:
                     await cursor.close()
-        rows = await (_get_users)
+        rows = await _get_users()
     except Exception as e:
         await query.answer(f"خطأ: {e}", show_alert=True)
         return
@@ -400,7 +400,7 @@ async def show_user_management(update: Update, page=0):
                     return (await cursor.fetchone())[0]
                 finally:
                     await cursor.close()
-        total = await (_get_total)
+        total = await _get_total()
         if offset + per_page < total:
             nav_row.append(InlineKeyboardButton("التالي ➡️", callback_data=f"user_page_{page+1}"))
         if nav_row:
@@ -501,10 +501,13 @@ async def handle_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def show_settings(update: Update):
     query = update.callback_query
     settings = await db.get_all_settings()
-    text = "⚙️ **الإعدادات الحالية:**\n\n"
+    text = "⚙️ **إعدادات الأسعار:**\n\n"
     keyboard = []
+    excluded_keys = ["checker_bot", "manager_acc", "honeypot_number"]
     for k, v in settings:
-        text += f"{k}: {v}\n"
+        if k in excluded_keys:
+            continue
+        text += f"🔹 {k}: {v}\n"
         keyboard.append([InlineKeyboardButton(f"✏️ تعديل {k}", callback_data=f"edit_setting_{k}")])
     keyboard.append([InlineKeyboardButton("🔙 لوحة الإدارة", callback_data="admin_panel")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
