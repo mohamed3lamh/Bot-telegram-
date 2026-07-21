@@ -359,6 +359,40 @@ class SmartCheckStrategy:
             if "AUTH_KEY" in error_str:
                 await account_manager.disable_account(account["id"])
                 return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف"}
+            if "DISCONNECTED" in error_str or "CONNECTION" in error_str:
+                logger.warning(f"[Layer 3] Client disconnected during SendCodeRequest. Deferring to Layer 4.")
+                try:
+                    await telegram_client_manager.disconnect_client(account["id"])
+                except Exception:
+                    pass
+                
+                checker_bot = await db.get_setting("checker_bot_username")
+                if checker_bot:
+                    logger.info(f"[Layer 4: ExternalBot] Falling back after disconnect for {phone} via @{checker_bot}...")
+                    ext_client = None
+                    manager_account_id = await db.get_setting("external_checker_account_id")
+                    if manager_account_id and str(manager_account_id).isdigit():
+                        manager_account_id = int(manager_account_id)
+                        accounts = await account_manager.get_all_accounts()
+                        manager_account = next((acc for acc in accounts if acc["id"] == manager_account_id), None)
+                        if manager_account and manager_account.get("is_active"):
+                            try:
+                                ext_client = await telegram_client_manager.get_client(manager_account)
+                            except Exception:
+                                pass
+                    if not ext_client:
+                        try:
+                            ext_client = await telegram_client_manager.get_client(account)
+                        except Exception:
+                            pass
+                    
+                    if ext_client:
+                        if not ext_client.is_connected():
+                            await ext_client.connect()
+                        ext_result = await self._check_via_external_bot(ext_client, phone, checker_bot)
+                        if ext_result is not None:
+                            return ext_result
+                return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ فصل الاتصال (احتمال وجود جلسة)"}
             return {"status": "ERROR", "phone": phone, "status_text": f"⚙️ خطأ نظام: {e}"}
 
 
