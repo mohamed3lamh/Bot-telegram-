@@ -1119,6 +1119,16 @@ async def global_error_handler(update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     try:
         await db.init_db()
+        
+        # --- TDLib Auto Migration ---
+        try:
+            from telegram_checker.tdlib_migrator import auto_migrate_all
+            import asyncio
+            asyncio.create_task(auto_migrate_all())
+        except Exception as mig_err:
+            logger.error(f"Failed to start TDLib auto migration: {mig_err}")
+        # ---------------------------
+        
     except Exception as e:
         logger.error(f"Database init error: {e}")
 

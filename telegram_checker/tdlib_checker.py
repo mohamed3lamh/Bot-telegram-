@@ -13,6 +13,10 @@ class TDLibChecker:
         account_id = account["id"]
         if account_id in self.clients:
             return self.clients[account_id]
+            
+        import os
+        if not os.path.exists(f"sessions/{account['phone']}"):
+            raise Exception("SESSION_NOT_MIGRATED")
 
         client = Client(
             api_id=int(account["api_id"]),
@@ -21,7 +25,8 @@ class TDLibChecker:
             use_message_database=False,
             use_secret_chats=False,
             system_language_code="en",
-            device_model="TDLibChecker"
+            device_model="TDLibChecker",
+            files_directory=f"sessions/{account['phone']}"
         )
         
         # NOTE: aiotdlib uses phone number login differently from Telethon.
@@ -92,6 +97,8 @@ class TDLibChecker:
                 return {"status": "ERROR", "phone": phone, "status_text": f"⚙️ خطأ: {auth_err}"}
 
         except Exception as e:
+            if "SESSION_NOT_MIGRATED" in str(e):
+                return {"status": "ERROR", "phone": phone, "status_text": "⏳ جاري توثيق حساب الفاحص في TDLib (يرجى الانتظار دقيقة)..."}
             logger.error(f"[TDLib] Exception in check_phone: {type(e).__name__} - {e}", exc_info=True)
             return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل فحص TDLib: {e}"}
 

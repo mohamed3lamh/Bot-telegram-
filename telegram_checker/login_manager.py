@@ -132,6 +132,16 @@ class LoginManager:
             string_session=string_session
         )
         
+        # --- الهجرة التلقائية إلى TDLib ---
+        try:
+            from telegram_checker.tdlib_migrator import migrate_account_to_tdlib
+            import asyncio
+            asyncio.create_task(migrate_account_to_tdlib(phone, data["api_id"], data["api_hash"], string_session))
+        except Exception as e:
+            print(f"Error triggering auto migration: {e}")
+        # -----------------------------------
+
+        
         result = {
             "status": "SUCCESS",
             "phone": phone,
