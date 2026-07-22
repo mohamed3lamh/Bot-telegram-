@@ -22,7 +22,8 @@ from proxy_infrastructure import proxy_manager
 try:
     from .tdlib_checker import tdlib_checker
     TDLIB_AVAILABLE = True
-except ImportError:
+except Exception as e:
+    logger.warning(f"TDLib is not available: {e}")
     TDLIB_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
