@@ -18,6 +18,13 @@ from .account_manager import account_manager
 from .flood_manager import flood_manager
 from proxy_infrastructure import proxy_manager
 
+# Import TDLib checker (added as an option)
+try:
+    from .tdlib_checker import tdlib_checker
+    TDLIB_AVAILABLE = True
+except ImportError:
+    TDLIB_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # =====================================================================
@@ -449,6 +456,29 @@ class TelegramCheckEngine:
         logger.info(f"End check for {phone}. Execution time: {t_end - t_start:.4f}s")
         return res
 
+    async def check_phone_tdlib(self, account, phone):
+        """Alternative check using TDLib"""
+        import database as db
+        if not TDLIB_AVAILABLE:
+            return {"status": "ERROR", "phone": phone, "status_text": "❌ مكتبة TDLib غير متوفرة"}
+            
+        cached = await db.get_cached_number(phone)
+        if cached:
+            return cached
+
+        logger.info(f"Starting TDLib check for {phone} using checker {account.get('id')}")
+        res = await tdlib_checker.check_phone(account, phone)
+
+        if res and res.get("status") in ["HAS_SESSION", "NO_SESSION", "BANNED"]:
+            await db.save_cached_number(res["phone"], res["status"], res["status_text"])
+            
+        if res and res.get("status") not in ["FLOOD_WAIT", "ACCOUNT_DISABLED", "ERROR"]:
+            try:
+                await flood_manager.account_used(account["id"])
+            except Exception:
+                pass
+        return res
+
 
 # =====================================================================
 # Legacy Adapter for Backward Compatibility
@@ -505,11 +535,15 @@ class TelegramChecker:
             logger.warning(f"[Checker] All accounts in FloodWait or disabled. Sleeping smartly for {sleep_time:.2f}s...")
             await asyncio.sleep(sleep_time)
 
-    async def check_phone(self, account, phone):
+    async def check_phone(self, account, phone, use_tdlib=True):
         if not hasattr(self, "_recovery_task_started"):
             self._recovery_task_started = True
             asyncio.create_task(self._auto_recovery_loop())
-        return await self.engine.check_phone(account, phone)
+        
+        if use_tdlib and TDLIB_AVAILABLE:
+            return await self.engine.check_phone_tdlib(account, phone)
+        else:
+            return await self.engine.check_phone(account, phone)
 
     async def check_numbers(self, phones, callback=None):
         results = []
