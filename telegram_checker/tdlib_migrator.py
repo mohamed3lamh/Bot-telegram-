@@ -27,7 +27,9 @@ async def fetch_code_from_telegram(api_id, api_hash, string_session):
     for _ in range(30):
         messages = await client.get_messages(777000, limit=2)
         for msg in messages:
-            if msg.message and "Login code:" in msg.message or "رمز الدخول:" in msg.message or "code:" in msg.message.lower() or "كود" in msg.message:
+            if msg.message:
+                logger.info(f"Checking message: {msg.message}")
+            if msg.message and ("login code" in msg.message.lower() or "رمز الدخول" in msg.message or "code:" in msg.message.lower() or "كود" in msg.message):
                 # Extract 5 digit code
                 match = re.search(r'\b(\d{5})\b', msg.message)
                 if match:
