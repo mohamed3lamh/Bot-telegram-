@@ -402,7 +402,7 @@ async def user_bot_callback_handler(update: Update, context: ContextTypes.DEFAUL
 
         context.job_queue.run_repeating(
             check_and_hunt_numbers, interval=1, first=1, user_id=user_id,
-            name=f"hunt_{user_id}"
+            name=f"hunt_{user_id}", job_kwargs={'max_instances': 10}
         )
         await db.set_hunting_status(user_id, 1)
         accounts_str = "\n".join([f"👤 {u}" for u, _ in active_accounts])
