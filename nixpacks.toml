@@ -1,3 +1,0 @@
-[phases.setup]
-nixPkgs = ["...", "tdlib", "pkg-config", "gcc", "rustc", "cargo", "libcxx"]
-aptPkgs = ["libc++1", "libc++abi1"]
