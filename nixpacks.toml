@@ -1,2 +1,2 @@
 [phases.setup]
-nixPkgs = ["...", "tdlib", "pkg-config", "gcc", "rustc", "cargo"]
+nixPkgs = ["...", "tdlib", "pkg-config", "gcc", "rustc", "cargo", "libcxx"]
