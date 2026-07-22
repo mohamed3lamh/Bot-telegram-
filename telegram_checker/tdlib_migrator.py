@@ -75,6 +75,7 @@ async def main():
         print(f"TDLIB_SUCCESS: {{me.id}}")
     except Exception as e:
         print(f"TDLIB_ERROR: {{e}}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     asyncio.run(main())
@@ -82,7 +83,10 @@ if __name__ == '__main__':
     script_path = f"/tmp/tdlib_login_{phone.strip('+')}.py"
     with open(script_path, "w") as f:
         f.write(script)
-        
+     
+    import asyncio
+    
+    # Start the subprocess
     import sys
     process = await asyncio.create_subprocess_exec(
         sys.executable, script_path,
@@ -90,6 +94,17 @@ if __name__ == '__main__':
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
     )
+    
+    async def log_subprocess_output(stream, prefix):
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            logger.info(f"[TDLib Subprocess {prefix}] {line.decode().strip()}")
+
+    # Run log readers in the background
+    asyncio.create_task(log_subprocess_output(process.stdout, "OUT"))
+    asyncio.create_task(log_subprocess_output(process.stderr, "ERR"))
     
     # While aiotdlib is starting, it will trigger the code to be sent.
     # We use Telethon to fetch it.
@@ -109,15 +124,13 @@ if __name__ == '__main__':
     await process.stdin.drain()
     
     # Wait for completion
-    stdout, stderr = await process.communicate()
-    out = stdout.decode()
-    err = stderr.decode()
+    await process.wait()
     
-    if "TDLIB_SUCCESS" in out:
+    if process.returncode == 0:
         logger.info(f"Successfully migrated {phone} to TDLib!")
         return True
     else:
-        logger.error(f"Failed to migrate {phone} to TDLib. Out: {out}, Err: {err}")
+        logger.error(f"Failed to migrate {phone} to TDLib. Process exited with code {process.returncode}")
         return False
 
 async def auto_migrate_all():
