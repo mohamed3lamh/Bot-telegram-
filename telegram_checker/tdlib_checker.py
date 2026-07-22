@@ -35,7 +35,9 @@ class TDLibChecker:
         # NOTE: aiotdlib uses phone number login differently from Telethon.
         # This will need proper session initialization.
         # We assume the session is already authenticated or needs auth.
-        await client.connect()
+        # Since aiotdlib 0.27 doesn't have connect(), we must manually handle it or use async with.
+        # However, for a persistent client, we can call __aenter__
+        await client.__aenter__()
         self.clients[account_id] = client
         return client
 
