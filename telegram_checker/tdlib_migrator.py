@@ -57,16 +57,18 @@ async def migrate_account_to_tdlib(phone, api_id, api_hash, string_session):
     script = f"""
 import asyncio
 import sys
-from aiotdlib import Client
+from aiotdlib import Client, ClientSettings
 
 async def main():
     try:
         client = Client(
-            api_id={api_id},
-            api_hash="{api_hash}",
-            phone_number="{phone}",
-            database_encryption_key="secret",
-            files_directory="sessions/{phone}"
+            settings=ClientSettings(
+                api_id={api_id},
+                api_hash="{api_hash}",
+                phone_number="{phone}",
+                database_encryption_key="secret",
+                files_directory="sessions/{phone}"
+            )
         )
         await client.connect()
         me = await client.api.get_me()

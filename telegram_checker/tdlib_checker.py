@@ -18,15 +18,18 @@ class TDLibChecker:
         if not os.path.exists(f"sessions/{account['phone']}"):
             raise Exception("SESSION_NOT_MIGRATED")
 
+        from aiotdlib import Client, ClientSettings
         client = Client(
-            api_id=int(account["api_id"]),
-            api_hash=account["api_hash"],
-            database_encryption_key="secret",
-            use_message_database=False,
-            use_secret_chats=False,
-            system_language_code="en",
-            device_model="TDLibChecker",
-            files_directory=f"sessions/{account['phone']}"
+            settings=ClientSettings(
+                api_id=int(account["api_id"]),
+                api_hash=account["api_hash"],
+                database_encryption_key="secret",
+                use_message_database=False,
+                use_secret_chats=False,
+                system_language_code="en",
+                device_model="TDLibChecker",
+                files_directory=f"sessions/{account['phone']}"
+            )
         )
         
         # NOTE: aiotdlib uses phone number login differently from Telethon.
