@@ -57,17 +57,24 @@ async def migrate_account_to_tdlib(phone, api_id, api_hash, string_session):
     script = f"""
 import asyncio
 import sys
+import ctypes.util
 from aiotdlib import Client, ClientSettings
 
 async def main():
     try:
+        # Find the system tdjson library installed via NixPkgs
+        lib_path = ctypes.util.find_library('tdjson')
+        if not lib_path:
+            lib_path = 'libtdjson.so' # Fallback
+            
         client = Client(
             settings=ClientSettings(
                 api_id={api_id},
                 api_hash="{api_hash}",
                 phone_number="{phone}",
                 database_encryption_key="secret",
-                files_directory="sessions/{phone}"
+                files_directory="sessions/{phone}",
+                library_path=lib_path
             )
         )
         await client.connect()
