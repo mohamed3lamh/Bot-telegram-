@@ -81,7 +81,7 @@ class AsyncCursor:
                 self._last_result = await self.conn.fetch(query, *params)
             else:
                 self._last_result = await self.conn.fetch(query)
-        except Exception:
+        except asyncpg.exceptions.QueryWithoutReturingError:
             if params:
                 await self.conn.execute(query, *params)
             else:
@@ -563,28 +563,28 @@ async def add_days_to_user(user_id, days, plan_type=None):
         if plan_type:
             await db_execute('''
                 UPDATE user_bots
-                SET expires_at = GREATEST(expires_at, CURRENT_TIMESTAMP) + INTERVAL '1 day' * %s,
+                SET expires_at = GREATEST(expires_at, CURRENT_TIMESTAMP) + CAST(%s AS INTERVAL),
                     plan_type = %s
                 WHERE user_id = %s
-            ''', (int(days), str(plan_type), user_id))
+            ''', (f"{days} days", plan_type, user_id))
         else:
             await db_execute('''
                 UPDATE user_bots
-                SET expires_at = GREATEST(expires_at, CURRENT_TIMESTAMP) + INTERVAL '1 day' * %s
+                SET expires_at = GREATEST(expires_at, CURRENT_TIMESTAMP) + CAST(%s AS INTERVAL)
                 WHERE user_id = %s
-            ''', (int(days), user_id))
+            ''', (f"{days} days", user_id))
     else:
         temp_token = f'pending_{user_id}'
         if plan_type:
             await db_execute('''
                 INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned, plan_type)
-                VALUES (%s, %s, 0, CURRENT_TIMESTAMP + INTERVAL '1 day' * %s, 0, %s)
-            ''', (user_id, temp_token, int(days), str(plan_type)))
+                VALUES (%s, %s, 0, CURRENT_TIMESTAMP + CAST(%s AS INTERVAL), 0, %s)
+            ''', (user_id, temp_token, f"{days} days", plan_type))
         else:
             await db_execute('''
                 INSERT INTO user_bots (user_id, token, is_active, expires_at, is_banned)
-                VALUES (%s, %s, 0, CURRENT_TIMESTAMP + INTERVAL '1 day' * %s, 0)
-            ''', (user_id, temp_token, int(days)))
+                VALUES (%s, %s, 0, CURRENT_TIMESTAMP + CAST(%s AS INTERVAL), 0)
+            ''', (user_id, temp_token, f"{days} days"))
 
 async def get_user_plan(user_id):
     """جلب نوع خطة المستخدم (1, 2, 3)"""
@@ -670,7 +670,7 @@ async def add_pending_subscription(user_id, plan, payment_method, amount_crypto,
             amount_crypto = EXCLUDED.amount_crypto,
             wallet_address = EXCLUDED.wallet_address,
             created_at = CURRENT_TIMESTAMP
-    """, (user_id, str(plan), str(payment_method), str(amount_crypto), str(wallet_address)))
+    """, (user_id, plan, payment_method, amount_crypto, wallet_address))
 
 async def get_pending_subscription(user_id):
     return await db_execute("SELECT plan, payment_method, amount_crypto, wallet_address, created_at FROM pending_subscriptions WHERE user_id = %s", (user_id,), commit=False, fetch='one')
@@ -719,7 +719,7 @@ async def save_telegram_account(phone, api_id, api_hash, string_session):
             api_hash=EXCLUDED.api_hash,
             string_session=EXCLUDED.string_session,
             is_active = TRUE
-    """, (str(phone), api_id, str(api_hash), str(string_session)))
+    """, (phone, api_id, api_hash, string_session))
 
 async def get_telegram_accounts():
     return await db_execute("""
@@ -755,14 +755,14 @@ async def get_best_telegram_account():
 
 # ---------- سجل العمليات ----------
 async def log_activity(user_id, action, details=""):
-    await db_execute("INSERT INTO activity_log (user_id, action, details) VALUES (%s, %s, %s)", (user_id, str(action), str(details)))
+    await db_execute("INSERT INTO activity_log (user_id, action, details) VALUES (%s, %s, %s)", (user_id, action, details))
 
 async def get_recent_activities(limit=50):
     return await db_execute("SELECT id, user_id, action, details, created_at FROM activity_log ORDER BY created_at DESC LIMIT %s", (limit,), commit=False, fetch='all')
 
 # ---------- تذاكر الدعم ----------
 async def create_ticket(user_id, subject, message):
-    await db_execute("INSERT INTO support_tickets (user_id, subject, message) VALUES (%s, %s, %s)", (user_id, str(subject), str(message)))
+    await db_execute("INSERT INTO support_tickets (user_id, subject, message) VALUES (%s, %s, %s)", (user_id, subject, message))
 
 async def get_open_tickets():
     return await db_execute("SELECT id, user_id, subject, message, status, admin_reply, created_at FROM support_tickets WHERE status='open' ORDER BY created_at DESC", commit=False, fetch='all')
@@ -771,7 +771,7 @@ async def get_all_tickets():
     return await db_execute("SELECT id, user_id, subject, message, status, admin_reply, created_at FROM support_tickets ORDER BY created_at DESC", commit=False, fetch='all')
 
 async def reply_ticket(ticket_id, reply_text):
-    await db_execute("UPDATE support_tickets SET admin_reply = %s, status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = %s", (str(reply_text), ticket_id))
+    await db_execute("UPDATE support_tickets SET admin_reply = %s, status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = %s", (reply_text, ticket_id))
 
 async def close_ticket(ticket_id):
     await db_execute("UPDATE support_tickets SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = %s", (ticket_id,))
