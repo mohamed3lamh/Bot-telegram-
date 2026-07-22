@@ -92,6 +92,7 @@ class TDLibChecker:
                 return {"status": "ERROR", "phone": phone, "status_text": f"⚙️ خطأ: {auth_err}"}
 
         except Exception as e:
+            logger.error(f"[TDLib] Exception in check_phone: {type(e).__name__} - {e}", exc_info=True)
             return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل فحص TDLib: {e}"}
 
 tdlib_checker = TDLibChecker()
