@@ -71,9 +71,9 @@ async def main():
                 files_directory="sessions/{phone}"
             )
         )
-        await client.connect()
-        me = await client.api.get_me()
-        print(f"TDLIB_SUCCESS: {{me.id}}")
+        async with client:
+            me = await client.api.get_me()
+            print(f"TDLIB_SUCCESS: {{me.id}}")
     except Exception as e:
         print(f"TDLIB_ERROR: {{e}}")
         sys.exit(1)
