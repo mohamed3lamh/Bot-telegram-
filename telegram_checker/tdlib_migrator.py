@@ -59,57 +59,42 @@ async def migrate_account_to_tdlib(phone, api_id, api_hash, string_session):
     script = f"""
 import asyncio
 import sys
+import builtins
+import time
+import os
 from aiotdlib import Client, ClientSettings
-from aiotdlib.api import API, UpdateAuthorizationState
-from aiotdlib.api.types import (
-    AuthorizationStateWaitPhoneNumber,
-    AuthorizationStateWaitCode,
-    AuthorizationStateReady,
-    AuthorizationStateWaitPassword,
-    AuthorizationStateClosed
-)
+
+def mock_input(prompt=""):
+    print(prompt, flush=True)
+    code_file = "/tmp/tdlib_code_{phone.strip('+')}.txt"
+    # Wait for the file to contain the code
+    for _ in range(120):
+        if os.path.exists(code_file):
+            with open(code_file, "r") as cf:
+                code = cf.read().strip()
+            if code:
+                print(f"Read code from file: {{code}}", flush=True)
+                return code
+        time.sleep(1)
+    print("Timeout waiting for code file", flush=True)
+    return ""
+
+builtins.input = mock_input
 
 async def main():
-    client = Client(
-        settings=ClientSettings(
-            api_id={api_id},
-            api_hash="{api_hash}",
-            database_encryption_key="secret",
-            files_directory="sessions/{phone}"
+    try:
+        client = Client(
+            settings=ClientSettings(
+                api_id={api_id},
+                api_hash="{api_hash}",
+                phone_number="{phone}",
+                database_encryption_key="secret",
+                files_directory="sessions/{phone}"
+            )
         )
-    )
-    
-    @client.on_event(UpdateAuthorizationState)
-    async def on_auth_state(client: Client, update: UpdateAuthorizationState):
-        state = update.authorization_state
-        print(f"TDLIB_STATE: {{type(state).__name__}}", flush=True)
-        if isinstance(state, AuthorizationStateWaitPhoneNumber):
-            await client.api.set_authentication_phone_number(phone_number="{phone}")
-        elif isinstance(state, AuthorizationStateWaitCode):
-            # Wait for code to be written to a file by the parent process
-            code_file = "/tmp/tdlib_code_{phone.strip('+')}.txt"
-            print("TDLIB_WAITING_FOR_CODE", flush=True)
-            for _ in range(60):
-                import os
-                if os.path.exists(code_file):
-                    with open(code_file, "r") as cf:
-                        code = cf.read().strip()
-                    if code:
-                        await client.api.check_authentication_code(code=code)
-                        break
-                await asyncio.sleep(1)
-        elif isinstance(state, AuthorizationStateReady):
+        async with client:
             me = await client.api.get_me()
             print(f"TDLIB_SUCCESS: {{me.id}}", flush=True)
-            await client.api.close()
-        elif isinstance(state, AuthorizationStateClosed):
-            pass
-
-    try:
-        await client.__aenter__()
-        # Keep running until closed
-        while not isinstance(client.authorization_state, AuthorizationStateClosed):
-            await asyncio.sleep(1)
     except Exception as e:
         print(f"TDLIB_ERROR: {{e}}", flush=True)
         sys.exit(1)
