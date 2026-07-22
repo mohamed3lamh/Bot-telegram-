@@ -83,9 +83,9 @@ if __name__ == '__main__':
     with open(script_path, "w") as f:
         f.write(script)
         
-    # Start the subprocess
+    import sys
     process = await asyncio.create_subprocess_exec(
-        "python", script_path,
+        sys.executable, script_path,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE

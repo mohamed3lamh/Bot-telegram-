@@ -1124,7 +1124,10 @@ async def main():
         try:
             from telegram_checker.tdlib_migrator import auto_migrate_all
             import asyncio
-            asyncio.create_task(auto_migrate_all())
+            migration_task = asyncio.create_task(auto_migrate_all())
+            _active_tasks = getattr(asyncio, "_active_tasks", set())
+            _active_tasks.add(migration_task)
+            migration_task.add_done_callback(_active_tasks.discard)
         except Exception as mig_err:
             logger.error(f"Failed to start TDLib auto migration: {mig_err}")
         # ---------------------------
@@ -1189,8 +1192,10 @@ async def main():
                 logger.error(f"[BackgroundTasks] Error in proxy health checker loop: {e}")
             await asyncio.sleep(600)  # الفحص كل 10 دقائق
 
-    asyncio.create_task(safe_restore())
-    asyncio.create_task(proxy_health_checker_loop())
+    bg_tasks = set()
+    t1 = asyncio.create_task(safe_restore())
+    t2 = asyncio.create_task(proxy_health_checker_loop())
+    bg_tasks.update([t1, t2])
 
     WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
     if WEBHOOK_URL:
