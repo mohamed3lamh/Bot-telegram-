@@ -1121,15 +1121,6 @@ async def main():
         await db.init_db()
         
         # --- TDLib Auto Migration ---
-        try:
-            from telegram_checker.tdlib_migrator import auto_migrate_all
-            import asyncio
-            migration_task = asyncio.create_task(auto_migrate_all())
-            _active_tasks = getattr(asyncio, "_active_tasks", set())
-            _active_tasks.add(migration_task)
-            migration_task.add_done_callback(_active_tasks.discard)
-        except Exception as mig_err:
-            logger.error(f"Failed to start TDLib auto migration: {mig_err}")
         # ---------------------------
         
     except Exception as e:

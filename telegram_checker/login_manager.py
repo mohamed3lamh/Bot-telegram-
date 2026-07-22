@@ -132,17 +132,7 @@ class LoginManager:
             string_session=string_session
         )
         
-        # --- الهجرة التلقائية إلى TDLib ---
-        try:
-            from telegram_checker.tdlib_migrator import migrate_account_to_tdlib
-            import asyncio
-            task = asyncio.create_task(migrate_account_to_tdlib(phone, data["api_id"], data["api_hash"], string_session))
-            _active_tasks = getattr(asyncio, "_active_tasks", set())
-            _active_tasks.add(task)
-            task.add_done_callback(_active_tasks.discard)
-        except Exception as e:
-            print(f"Error triggering auto migration: {e}")
-        # -----------------------------------
+        # TDLib is deactivated. Telethon is now handling everything natively.
 
         
         result = {

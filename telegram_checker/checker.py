@@ -536,15 +536,14 @@ class TelegramChecker:
             logger.warning(f"[Checker] All accounts in FloodWait or disabled. Sleeping smartly for {sleep_time:.2f}s...")
             await asyncio.sleep(sleep_time)
 
-    async def check_phone(self, account, phone, use_tdlib=True):
+    async def check_phone(self, account, phone, use_tdlib=False):
         if not hasattr(self, "_recovery_task_started"):
             self._recovery_task_started = True
             asyncio.create_task(self._auto_recovery_loop())
         
-        if use_tdlib and TDLIB_AVAILABLE:
-            return await self.engine.check_phone_tdlib(account, phone)
-        else:
-            return await self.engine.check_phone(account, phone)
+        # Proposal 3: Completely remove TDLib usage and rely on Telethon.
+        # TDLib is segfaulting (-11) inside the container due to library incompatibilities.
+        return await self.engine.check_phone(account, phone)
 
     async def check_numbers(self, phones, callback=None):
         results = []
