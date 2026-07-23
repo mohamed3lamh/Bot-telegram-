@@ -4,15 +4,14 @@ import logging
 import time
 import traceback
 import datetime
-from telethon import functions, types
-from telethon.errors import (
-    FloodWaitError, UserPrivacyRestrictedError, PhoneNumberBannedError,
-    SessionPasswordNeededError, PhoneNumberInvalidError,
-    PhoneNumberUnoccupiedError, PhoneMigrateError, PhoneCodeInvalidError
+
+from telegram_checker.backend.errors import (
+    BackendFloodWaitError, BackendPrivacyError, BackendPhoneBannedError,
+    BackendSessionPasswordNeededError, BackendPhoneInvalidError,
+    BackendPhoneUnoccupiedError, BackendPhoneMigrateError, BackendCodeInvalidError,
+    BackendSessionUnauthorizedError, BackendError
 )
-from telethon.tl.types.auth import (
-    SentCodeTypeApp, SentCodeTypeSms, SentCodeTypeFlashCall, SentCodeTypeMissedCall, SentCodeTypeEmailCode
-)
+
 from .telegram_client import telegram_client_manager, SessionUnauthorizedError
 from .account_manager import account_manager
 from .flood_manager import flood_manager
@@ -31,21 +30,21 @@ class SmartCheckStrategy:
     2. الطبقة الثانية: فحص الخادم المباشر وتحديد الخصوصية (ResolvePhoneRequest) - لمعالجة قيود الخصوصية والتفريق الدقيق.
     3. الطبقة الثالثة: فحص التدفق بالكود التجريبي (send_code_request) - الملاذ الأخير الحاسم لتحديد وجود التطبيق (App vs SMS) مع إلغاء الكود فوراً وبشكل حاسم لتجنب إرسال أي رسالة للمستهدف.
     """
-    async def _check_via_external_bot(self, client, phone, bot_username):
+    async def _check_via_external_bot(self, backend, phone, bot_username):
         """فحص الرقم عبر بوت فحص خارجي عبر رسائل تيليجرام المباشرة"""
         try:
             before_send = datetime.datetime.now(datetime.timezone.utc)
-            await client.send_message(bot_username, phone)
+            await backend.send_message(bot_username, phone)
             logger.info(f"[ExternalBot] Sent {phone} to {bot_username}, waiting for response...")
 
             for _ in range(45):  # انتظار حتى 45 ثانية
                 await asyncio.sleep(1)
-                messages = await client.get_messages(bot_username, limit=3)
+                messages = await backend.get_messages(bot_username, limit=3)
                 for msg in messages:
-                    if msg.out:
+                    if msg.get("out"):
                         continue
-                    if msg.date >= before_send and '📊' in (msg.text or ''):
-                        reply = msg.text
+                    if msg.get("date") >= before_send and '📊' in (msg.get("text") or ''):
+                        reply = msg.get("text")
                         if '🔐' in reply:
                             logger.info(f"[ExternalBot] ✅ Result: REGISTERED (Phone: {phone})")
                             return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
@@ -65,7 +64,7 @@ class SmartCheckStrategy:
             logger.error(f"[ExternalBot] Failed to communicate with bot {bot_username}: {type(e).__name__} - {e}")
             return None
 
-    async def check(self, client, phone, account):
+    async def check(self, backend, phone, account):
         import database as db
         # تجميع نتائج الطبقات لضمان عدم حدوث تضارب في النتيجة النهائية
         layer_results = {}
@@ -73,41 +72,43 @@ class SmartCheckStrategy:
         # --- الطبقة الأولى: الاستيراد الصامت (Silent Import) ---
         logger.info(f"[Layer 1: Import] Silent Contact Import check for {phone}")
         try:
-            contact = types.InputPhoneContact(client_id=0, phone=phone, first_name="TempCheck", last_name="")
             import_res = await asyncio.wait_for(
-                client(functions.contacts.ImportContactsRequest(contacts=[contact])),
+                backend.import_contacts([phone]),
                 timeout=8.0
             )
             
             # تنظيف قائمة جهات الاتصال فوراً
-            if import_res.users:
-                user_id = import_res.users[0].id
-                await client(functions.contacts.DeleteContactsRequest(id=[user_id]))
+            users = import_res.get("users", [])
+            imported = import_res.get("imported", [])
+            
+            if users:
+                user_id = users[0].get("id")
+                await backend.delete_contacts([user_id])
                 logger.info(f"[Layer 1] User found directly! Registered. (Phone: {phone})")
                 layer_results["layer1"] = "HAS_SESSION"
                 return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
             
-            elif import_res.imported:
-                imported_user_id = import_res.imported[0].user_id
-                await client(functions.contacts.DeleteContactsRequest(id=[imported_user_id]))
+            elif imported:
+                imported_user_id = imported[0].get("user_id")
+                await backend.delete_contacts([imported_user_id])
                 logger.info(f"[Layer 1] Contact imported! Registered. (Phone: {phone})")
                 layer_results["layer1"] = "HAS_SESSION"
                 return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
-        except PhoneMigrateError as e:
+        except BackendPhoneMigrateError as e:
             # معالجة فورية لانتقال مركز البيانات
             logger.info(f"[Layer 1] Phone migrate detected to DC {e.new_dc}. Re-routing...")
             try:
                 await telegram_client_manager.disconnect_client(account["id"])
-                client2 = await telegram_client_manager.get_client(account)
-                await client2._switch_dc(e.new_dc)
+                backend2 = await telegram_client_manager.get_client(account)
+                await backend2.switch_dc(e.new_dc)
                 await asyncio.sleep(0.5)
-                return await self.check(client2, phone, account)
+                return await self.check(backend2, phone, account)
             except Exception as migrate_error:
                 logger.error(f"Migration error: {migrate_error}")
                 return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل الانتقال لـ DC {e.new_dc}"}
 
-        except FloodWaitError as e:
+        except BackendFloodWaitError as e:
             await flood_manager.set_flood(account["id"], e.seconds)
             return {
                 "status": "FLOOD_WAIT",
@@ -115,36 +116,38 @@ class SmartCheckStrategy:
                 "phone": phone,
                 "status_text": f"🚫 حظر مؤقت {e.seconds} ثانية"
             }
+        except BackendSessionUnauthorizedError:
+            await account_manager.disable_account(account["id"])
+            return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
+        except BackendError as e:
+            logger.warning(f"[Layer 1] Backend error: {e}")
         except Exception as e:
-            error_message = str(e).upper()
-            logger.warning(f"[Layer 1] Silent Phase error: {e}")
-            if "BANNED" in error_message or "AUTH_KEY_UNREGISTERED" in error_message:
-                await account_manager.disable_account(account["id"])
-                return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
+            logger.warning(f"[Layer 1] Silent Phase generic error: {e}")
 
         # --- الطبقة الثانية: فحص الخصوصية والتحقق المباشر (ResolvePhone) ---
         logger.info(f"[Layer 2: ResolvePhone] Running ResolvePhoneRequest for {phone}")
         try:
-            resolved = await client(functions.contacts.ResolvePhoneRequest(phone=phone))
-            if resolved.users:
+            resolved = await backend.resolve_phone(phone)
+            users = resolved.get("users", [])
+            if users:
                 logger.info(f"[Layer 2] User resolved successfully! Registered. (Phone: {phone})")
                 layer_results["layer2"] = "HAS_SESSION"
                 return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
             else:
                 logger.info(f"[Layer 2] ResolvePhone returned empty user. Moving to Layer 3...")
 
-        except UserPrivacyRestrictedError:
+        except BackendPrivacyError:
             # مستخدم مسجل ولكن قام بتشديد إعدادات الخصوصية (دليل قاطع على وجود الحساب!)
             logger.info(f"[Layer 2] Privacy Restricted! Phone is Registered but hidden. (Phone: {phone})")
             layer_results["layer2"] = "HAS_SESSION"
             return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
-        except PhoneNumberUnoccupiedError:
+        except BackendPhoneUnoccupiedError:
             logger.info(f"[Layer 2] Phone unoccupied. Not registered. (Phone: {phone})")
             layer_results["layer2"] = "NO_SESSION"
             # السماح بالمرور للطبقة الثالثة كخطوة تأكيد
 
-        except PhoneNumberBannedError:
+        except BackendPhoneBannedError:
             logger.info(f"[Layer 2] Phone is banned. (Phone: {phone})")
             return {
                 "status": "BANNED",
@@ -152,13 +155,12 @@ class SmartCheckStrategy:
                 "status_text": "📵 مـحـظـور"
             }
 
-        except PhoneNumberInvalidError:
+        except BackendPhoneInvalidError:
             logger.info(f"[Layer 2] Phone invalid. (Phone: {phone})")
             layer_results["layer2"] = "NO_SESSION"
             # السماح بالمرور للطبقة الثالثة كخطوة تأكيد
-            # تم إزالة الإرجاع المبكر
 
-        except FloodWaitError as e:
+        except BackendFloodWaitError as e:
             await flood_manager.set_flood(account["id"], e.seconds)
             return {
                 "status": "FLOOD_WAIT",
@@ -166,37 +168,12 @@ class SmartCheckStrategy:
                 "phone": phone,
                 "status_text": f"🚫 حظر مؤقت {e.seconds} ثانية"
             }
+        except BackendSessionUnauthorizedError:
+            await account_manager.disable_account(account["id"])
+            return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
 
         except Exception as e:
-            error_str = str(e).upper()
-            error_type = type(e).__name__.upper()
             logger.warning(f"[Layer 2] ResolvePhone error: {e}")
-
-            # فحص الكلمات المفتاحية للخطأ للتعامل الدقيق
-            NO_SESSION_KEYWORDS = ["UNOCCUPIED", "NO USER", "NOT FOUND", "NOT_FOUND", "NO_PHONE_ASSOCIATED"]
-            BANNED_KEYWORDS = ["BANNED", "PHONE_NUMBER_BANNED"]
-            PRIVACY_KEYWORDS = ["PRIVACY", "PRIVACY_RESTRICTED", "USERPRIVACYRESTRICTED"]
-
-            if any(kw in error_str or kw in error_type for kw in PRIVACY_KEYWORDS):
-                logger.info(f"[Layer 2] Privacy error detected. Phone is Registered. (Phone: {phone})")
-                layer_results["layer2"] = "HAS_SESSION"
-                return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
-
-            elif any(kw in error_str or kw in error_type for kw in NO_SESSION_KEYWORDS):
-                logger.info(f"[Layer 2] Keyword 'NOT_FOUND' detected. (Phone: {phone})")
-                layer_results["layer2"] = "NO_SESSION"
-
-            elif any(kw in error_str or kw in error_type for kw in BANNED_KEYWORDS):
-                logger.info(f"[Layer 2] Keyword match: Banned. (Phone: {phone})")
-                return {
-                    "status": "BANNED",
-                    "phone": phone,
-                    "status_text": "📵 مـحـظـور"
-                }
-
-            elif "AUTH_KEY" in error_str:
-                await account_manager.disable_account(account["id"])
-                return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف وتم تعطيله"}
 
         # --- اختبار الفخ (Honeypot Test) لتأكيد حظر الظل ---
         honeypot_number = await db.get_setting("honeypot_number")
@@ -210,22 +187,30 @@ class SmartCheckStrategy:
                     logger.info(f"[Honeypot] Testing account {account['id']} with honeypot {honeypot_number}...")
                     found_hp = False
                     try:
-                        hp_contact = types.InputPhoneContact(client_id=0, phone=honeypot_number, first_name="TempHP", last_name="")
                         hp_res = await asyncio.wait_for(
-                            client(functions.contacts.ImportContactsRequest(contacts=[hp_contact])),
+                            backend.import_contacts([honeypot_number]),
                             timeout=6.0
                         )
-                        if getattr(hp_res, 'users', None):
+                        hp_users = hp_res.get('users', [])
+                        hp_imported = hp_res.get('imported', [])
+                        
+                        if hp_users:
                             found_hp = True
-                            await client(functions.contacts.DeleteContactsRequest(id=[hp_res.users[0].id]))
-                        elif getattr(hp_res, 'imported', None):
+                            await backend.delete_contacts([hp_users[0].get('id')])
+                        elif hp_imported:
                             found_hp = True
-                            await client(functions.contacts.DeleteContactsRequest(id=[hp_res.imported[0].user_id]))
+                            await backend.delete_contacts([hp_imported[0].get('user_id')])
                         
                         if not found_hp:
-                            hp_res2 = await client(functions.contacts.ResolvePhoneRequest(phone=honeypot_number))
-                            if getattr(hp_res2, 'users', None):
+                            try:
+                                hp_res2 = await backend.resolve_phone(honeypot_number)
+                                if hp_res2.get('users'):
+                                    found_hp = True
+                            except BackendPrivacyError:
                                 found_hp = True
+                            except Exception:
+                                pass
+                                
                     except Exception as hp_err:
                         logger.warning(f"[Honeypot] Check error: {hp_err}")
                         
@@ -257,22 +242,18 @@ class SmartCheckStrategy:
         is_success = False
         is_flood = False
         try:
-            if not client.is_connected():
-                await client.connect()
+            if not backend.is_connected():
+                await backend.connect()
 
-            result = await client(functions.auth.SendCodeRequest(
-                phone_number=phone,
+            result = await backend.check_layer3_send_code(
+                phone=phone,
                 api_id=int(account["api_id"]),
-                api_hash=account["api_hash"],
-                settings=types.CodeSettings(allow_flashcall=False, current_number=True, allow_app_hash=True)
-            ))
+                api_hash=account["api_hash"]
+            )
             
             # إلغاء الكود فوراً
             try:
-                await client(functions.auth.CancelCodeRequest(
-                    phone_number=phone,
-                    phone_code_hash=result.phone_code_hash
-                ))
+                await backend.cancel_code(phone, result.get("phone_code_hash", ""))
             except Exception:
                 pass
             
@@ -284,7 +265,7 @@ class SmartCheckStrategy:
                 logger.info(f"[Layer 4: ExternalBot] Checking {phone} via @{checker_bot}...")
                 
                 manager_account_id = await db.get_setting("external_checker_account_id")
-                ext_client = client
+                ext_backend = backend
                 
                 if manager_account_id and str(manager_account_id).isdigit():
                     manager_account_id = int(manager_account_id)
@@ -293,16 +274,16 @@ class SmartCheckStrategy:
                         manager_account = next((acc for acc in accounts if acc["id"] == manager_account_id), None)
                         if manager_account and manager_account.get("is_active"):
                             try:
-                                ext_client = await telegram_client_manager.get_client(manager_account)
-                                if not ext_client.is_connected():
-                                    await ext_client.connect()
+                                ext_backend = await telegram_client_manager.get_client(manager_account)
+                                if not ext_backend.is_connected():
+                                    await ext_backend.connect()
                                 logger.info(f"[Layer 4: ExternalBot] Handed off to Manager Account ID: {manager_account_id}")
                             except Exception as e:
                                 logger.error(f"[Layer 4: ExternalBot] Failed to get manager client: {e}. Falling back to current worker.")
                         else:
                             logger.warning(f"[Layer 4: ExternalBot] Manager account {manager_account_id} not found or inactive. Falling back to current worker.")
                 
-                ext_result = await self._check_via_external_bot(ext_client, phone, checker_bot)
+                ext_result = await self._check_via_external_bot(ext_backend, phone, checker_bot)
                 if ext_result is not None:
                     is_success = True
                     return ext_result
@@ -312,56 +293,50 @@ class SmartCheckStrategy:
                 logger.warning(f"[Layer 4: ExternalBot] Not configured. Cannot determine accuracy.")
                 return {"status": "INACCURATE", "phone": phone, "status_text": "⚠️ فحص ليس دقيق (يرجى ربط بوت خارجي)"}
 
-        except PhoneNumberUnoccupiedError:
+        except BackendPhoneUnoccupiedError:
             logger.info(f"[Layer 3] Unoccupied error. Phone is Not Registered. (Phone: {phone})")
             is_success = True
             return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
 
-        except PhoneNumberBannedError:
+        except BackendPhoneBannedError:
             logger.info(f"[Layer 3] Banned error. Phone is Banned. (Phone: {phone})")
             is_success = True
             return {"status": "BANNED", "phone": phone, "status_text": "📵 مـحـظـور"}
 
-        except PhoneNumberInvalidError:
+        except BackendPhoneInvalidError:
             logger.info(f"[Layer 3] Invalid phone. Phone is Not Registered. (Phone: {phone})")
             is_success = True
             return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
 
-        except FloodWaitError as e:
+        except BackendFloodWaitError as e:
             await flood_manager.set_flood(account["id"], e.seconds)
             logger.warning(f"[Layer 3] FloodWait: {e.seconds} seconds on checker.")
             is_flood = True
             return {"status": "FLOOD_WAIT", "seconds": e.seconds, "phone": phone, "status_text": f"🚫 حظر مؤقت {e.seconds} ثانية"}
 
-        except SessionPasswordNeededError:
+        except BackendSessionPasswordNeededError:
             logger.info(f"[Layer 3] Session password needed! Phone is Registered. (Phone: {phone})")
             is_success = True
             return {"status": "HAS_SESSION", "phone": phone, "status_text": "⚠️ الرقم لديه جلسة"}
 
-        except PhoneMigrateError as e:
+        except BackendPhoneMigrateError as e:
             logger.info(f"[Layer 3] PhoneMigrateError to DC {e.new_dc}. Re-routing...")
             try:
                 await telegram_client_manager.disconnect_client(account["id"])
-                client2 = await telegram_client_manager.get_client(account)
-                await client2._switch_dc(e.new_dc)
+                backend2 = await telegram_client_manager.get_client(account)
+                await backend2.switch_dc(e.new_dc)
                 await asyncio.sleep(0.5)
-                return await self.check(client2, phone, account)
+                return await self.check(backend2, phone, account)
             except Exception as migrate_err:
                 return {"status": "ERROR", "phone": phone, "status_text": f"❌ فشل الانتقال لـ DC {e.new_dc}"}
 
+        except BackendSessionUnauthorizedError:
+            await account_manager.disable_account(account["id"])
+            return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف"}
+
         except Exception as e:
-            error_str = str(e).upper()
             logger.error(f"[Layer 3] Unexpected exception for {phone}: {e}")
-            if any(kw in error_str for kw in ["UNOCCUPIED", "NO USER", "NOT FOUND", "NOT_FOUND"]):
-                return {"status": "NO_SESSION", "phone": phone, "status_text": "🆕 غير مسجل"}
-            if "BANNED" in error_str:
-                return {"status": "BANNED", "phone": phone, "status_text": "📵 مـحـظـور"}
-            if "AUTH_KEY" in error_str:
-                await account_manager.disable_account(account["id"])
-                return {"status": "ACCOUNT_DISABLED", "phone": phone, "status_text": "❌ حساب الفاحص تالف"}
             return {"status": "ERROR", "phone": phone, "status_text": f"⚙️ خطأ نظام: {e}"}
-
-
 
 # =====================================================================
 # Main Engine: TelegramCheckEngine
@@ -382,7 +357,7 @@ class TelegramCheckEngine:
         logger.info(f"Starting check for {phone} using checker {account.get('id')}")
 
         try:
-            client = await telegram_client_manager.get_client(account)
+            backend = await telegram_client_manager.get_client(account)
             logger.info("Connected Successfully")
         except SessionUnauthorizedError:
             await account_manager.disable_account(account["id"])
@@ -401,7 +376,7 @@ class TelegramCheckEngine:
                 "status_text": f"❌ فشل الاتصال بالفاحص: {e}"
             }
 
-        res = await self.strategy.check(client, phone, account)
+        res = await self.strategy.check(backend, phone, account)
         
         if res and res.get("status") in ["HAS_SESSION", "NO_SESSION", "BANNED"]:
             await db.save_cached_number(res["phone"], res["status"], res["status_text"])
@@ -415,7 +390,6 @@ class TelegramCheckEngine:
         logger.info(f"End check for {phone}. Execution time: {t_end - t_start:.4f}s")
         return res
 
-
 # =====================================================================
 # Legacy Adapter for Backward Compatibility
 # =====================================================================
@@ -425,11 +399,7 @@ class TelegramChecker:
         self.engine = TelegramCheckEngine()
 
     async def _auto_recovery_loop(self):
-        """
-        حلقة خلفية تعمل كل 5 دقائق لمحاولة استعادة الحسابات المعطلة
-        وإعادتها للخدمة تلقائياً في حال عادت للعمل.
-        """
-        await asyncio.sleep(30)  # الانتظار قليلاً عند بدء التشغيل لعدم التضارب
+        await asyncio.sleep(30)
         while True:
             try:
                 disabled_accounts = await account_manager.get_all_disabled_accounts()
@@ -437,9 +407,8 @@ class TelegramChecker:
                     logger.info(f"[Auto-Recovery] Found {len(disabled_accounts)} disabled accounts. Testing recovery...")
                     for acc in disabled_accounts:
                         try:
-                            # محاولة تهيئة الاتصال بدون إثارة أخطاء
-                            client = await telegram_client_manager.get_client(acc)
-                            if await client.is_user_authorized():
+                            backend = await telegram_client_manager.get_client(acc)
+                            if await backend.is_user_authorized():
                                 logger.info(f"[Auto-Recovery] Account {acc['phone']} is authorized! Recovering...")
                                 await account_manager.enable_account(acc["id"])
                         except SessionUnauthorizedError:
@@ -449,7 +418,7 @@ class TelegramChecker:
             except Exception as e:
                 logger.error(f"[Auto-Recovery] Error in recovery loop: {e}")
             
-            await asyncio.sleep(300) # فحص كل 5 دقائق
+            await asyncio.sleep(300)
 
     async def get_available_account(self):
         if not hasattr(self, "_recovery_task_started"):
@@ -458,10 +427,6 @@ class TelegramChecker:
         return await account_manager.get_available_account()
 
     async def wait_for_account(self):
-        """
-        Smart Wait: If all checkers are in FloodWait, sleeps precisely 
-        until the earliest flooded account becomes free.
-        """
         while True:
             account = await self.get_available_account()
             if account:
@@ -483,7 +448,6 @@ class TelegramChecker:
             account = await self.wait_for_account()
             result = await self.check_phone(account, phone)
             
-            # Retry if the current checker account hits Flood or gets deactivated during the request
             if result["status"] in ["FLOOD_WAIT", "ACCOUNT_DISABLED"]:
                 account_retry = await self.wait_for_account()
                 result = await self.check_phone(account_retry, phone)
@@ -492,7 +456,6 @@ class TelegramChecker:
             if callback:
                 await callback(result)
         return results
-
 
 class BatchChecker:
     def __init__(self, checker):
