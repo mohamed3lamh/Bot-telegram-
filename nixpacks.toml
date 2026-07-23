@@ -1,2 +1,2 @@
 [phases.setup]
-nixPkgs = ["...", "tdlib"]
+nixPkgs = ["...", "openssl_1_1"]
