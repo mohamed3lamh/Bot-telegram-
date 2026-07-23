@@ -4,6 +4,8 @@ import asyncio
 import threading
 import uuid
 import logging
+import os
+import platform
 from typing import Dict, Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -12,12 +14,32 @@ class TDLibBindingException(Exception):
     """استثناء خاص بطبقة الربط."""
     pass
 
+def _get_bundled_lib_path() -> str:
+    try:
+        import telegram
+        base_dir = os.path.dirname(telegram.__file__)
+        sys_name = platform.system().lower()
+        if sys_name == 'linux':
+            lib_path = os.path.join(base_dir, 'lib', 'linux', 'libtdjson.so')
+        elif sys_name == 'darwin':
+            lib_path = os.path.join(base_dir, 'lib', 'darwin', 'libtdjson.dylib')
+        else:
+            lib_path = os.path.join(base_dir, 'lib', 'windows', 'tdjson.dll')
+            
+        if os.path.exists(lib_path):
+            return lib_path
+    except Exception:
+        pass
+    return "libtdjson.so"
+
 class TDLibClient:
     """
     مُغلف (Wrapper) مستقل تماماً وغير متزامن (Async) لمكتبة libtdjson.so.
     لا يحتوي على أي منطق خاص بالمشروع (Auth/Session/Proxy)، فقط إرسال واستقبال JSON.
     """
-    def __init__(self, lib_path: str = "libtdjson.so"):
+    def __init__(self, lib_path: str = None):
+        if lib_path is None:
+            lib_path = _get_bundled_lib_path()
         try:
             self.lib = ctypes.CDLL(lib_path)
         except OSError as e:
